@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Строка запуска – {{ server.name }}{% endblock %}
+{% block content %}
+<h2>Настройка строки запуска</h2>
+<div class="card">
+    <div class="card-body">
+        <form method="post">
+            <div class="mb-2">
+                <label class="form-label">Команда запуска</label>
+                <textarea name="startup_command" class="form-control" rows="3">{{ server.startup_command }}</textarea>
+            </div>
+            <div class="mb-2">
+                <label class="form-label">Максимальный % памяти</label>
+                <input type="number" name="memory_percent" value="{{ server.memory_percent }}" class="form-control" min="50" max="100">
+            </div>
+            <div class="mb-2">
+                <label class="form-label">Временная зона</label>
+                <input type="text" name="timezone" value="{{ server.timezone }}" class="form-control">
+            </div>
+            <div class="mb-2">
+                <label class="form-label">Сборщик мусора</label>
+                <input type="text" name="garbage_collector" value="{{ server.garbage_collector }}" class="form-control">
+            </div>
+            <button type="submit" class="btn btn-primary">Сохранить</button>
+        </form>
+    </div>
+</div>
+<a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-secondary">Назад</a>
+{% endblock %}

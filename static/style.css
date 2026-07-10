@@ -1,0 +1,89 @@
+/* Тёмная тема */
+body {
+    background-color: #1a1a2e;
+    color: #e0e0e0;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    padding-left: 260px; /* ширина бокового меню */
+}
+.sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    width: 250px;
+    background-color: #16213e;
+    padding: 20px 0;
+    overflow-y: auto;
+    border-right: 1px solid #2a3a6e;
+    z-index: 1000;
+}
+.sidebar .brand {
+    color: #e94560;
+    font-size: 1.5rem;
+    font-weight: bold;
+    padding: 0 20px 20px;
+    border-bottom: 1px solid #2a3a6e;
+    margin-bottom: 20px;
+}
+.sidebar .nav-link {
+    color: #b0b0c0;
+    padding: 10px 20px;
+    border-radius: 0;
+    transition: 0.2s;
+}
+.sidebar .nav-link:hover {
+    background-color: #2a3a6e;
+    color: #ffffff;
+}
+.sidebar .nav-link.active {
+    background-color: #e94560;
+    color: #fff;
+}
+.main-content {
+    padding: 20px 30px;
+}
+.card {
+    background-color: #1f2a4a;
+    border: 1px solid #2a3a6e;
+    border-radius: 8px;
+    margin-bottom: 20px;
+}
+.card-header {
+    background-color: #16213e;
+    border-bottom: 1px solid #2a3a6e;
+    color: #e0e0e0;
+}
+.btn-primary {
+    background-color: #e94560;
+    border: none;
+}
+.btn-primary:hover {
+    background-color: #c73652;
+}
+.btn-secondary {
+    background-color: #2a3a6e;
+    border: none;
+}
+.btn-secondary:hover {
+    background-color: #3a4a7e;
+}
+pre, .console-output {
+    background-color: #0d1a2b;
+    color: #c8d6e5;
+    padding: 15px;
+    border-radius: 5px;
+    border: 1px solid #2a3a6e;
+}
+.table-dark {
+    background-color: #16213e;
+    color: #e0e0e0;
+}
+.table-dark th {
+    border-color: #2a3a6e;
+}
+a {
+    color: #e94560;
+}
+a:hover {
+    color: #ff6b81;
+}

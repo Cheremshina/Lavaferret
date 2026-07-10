@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Домен – {{ server.name }}{% endblock %}
+{% block content %}
+<h2>Управление доменом</h2>
+<div class="card">
+    <div class="card-body">
+        <form method="post">
+            <div class="mb-2">
+                <label class="form-label">Пользовательский домен</label>
+                <input type="text" name="domain" value="{{ server.domain or '' }}" class="form-control" placeholder="например, mc.example.com">
+            </div>
+            <button type="submit" class="btn btn-primary">Сохранить</button>
+        </form>
+        <p class="text-muted mt-2">Домен будет использован для подключения к серверу (требуется DNS-настройка).</p>
+    </div>
+</div>
+<a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-secondary">Назад</a>
+{% endblock %}

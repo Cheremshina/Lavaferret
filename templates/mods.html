@@ -1,0 +1,261 @@
+{% extends "base.html" %}
+{% block title %}Моды – {{ server.name }}{% endblock %}
+{% block content %}
+<h2>Моды сервера {{ server.name }}</h2>
+
+<div class="card mb-3">
+    <div class="card-header">Установленные моды</div>
+    <div class="card-body">
+        {% if installed_mods %}
+        <ul class="list-group list-group-flush bg-transparent">
+            {% for m in installed_mods %}
+            <li class="list-group-item bg-transparent text-light">{{ m }}</li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-muted">Моды не найдены</p>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">Поиск модов на Modrinth</div>
+    <div class="card-body">
+        <div class="row mb-3">
+            <div class="col-md-3">
+                <label>Версия Minecraft</label>
+                <select id="mc-version" class="form-control">
+                    <option value="" selected>Любая</option>
+                        <option value='26.2'>26.2</option>
+                        <option value='26.1.2'>26.1.2</option>
+                        <option value='26.1.1'>26.1.1</option>
+                        <option value='26.1'>26.1</option>
+                        <option value='1.21.11'>1.21.11</option>
+                        <option value='1.21.10'>1.21.10</option>
+                        <option value='1.21.9'>1.21.9</option>
+                        <option value='1.21.8'>1.21.8</option>
+                        <option value='1.21.7'>1.21.7</option>
+                        <option value='1.21.6'>1.21.6</option>
+                        <option value='1.21.5'>1.21.5</option>
+                        <option value='1.21.4'>1.21.4</option>
+                        <option value='1.21.3'>1.21.3</option>
+                        <option value='1.21.2'>1.21.2</option>
+                        <option value='1.21.1'>1.21.1</option>
+                        <option value='1.21'>1.21</option>
+                        <option value='1.20.6'>1.20.6</option>
+                        <option value='1.20.5'>1.20.5</option>
+                        <option value='1.20.4'>1.20.4</option>
+                        <option value='1.20.3'>1.20.3</option>
+                        <option value='1.20.2'>1.20.2</option>
+                        <option value='1.20.1'>1.20.1</option>
+                        <option value='1.20'>1.20</option>
+                        <option value='1.19.4'>1.19.4</option>
+                        <option value='1.19.3'>1.19.3</option>
+                        <option value='1.19.2'>1.19.2</option>
+                        <option value='1.19.1'>1.19.1</option>
+                        <option value='1.19'>1.19</option>
+                        <option value='1.18.2'>1.18.2</option>
+                        <option value='1.18.1'>1.18.1</option>
+                        <option value='1.18'>1.18</option>
+                        <option value='1.17.1'>1.17.1</option>
+                        <option value='1.17'>1.17</option>
+                        <option value='1.16.5'>1.16.5</option>
+                        <option value='1.16.4'>1.16.4</option>
+                        <option value='1.16.3'>1.16.3</option>
+                        <option value='1.16.2'>1.16.2</option>
+                        <option value='1.16.1'>1.16.1</option>
+                        <option value='1.16'>1.16</option>
+                        <option value='1.15.2'>1.15.2</option>
+                        <option value='1.15.1'>1.15.1</option>
+                        <option value='1.15'>1.15</option>
+                        <option value='1.14.4'>1.14.4</option>
+                        <option value='1.14.3'>1.14.3</option>
+                        <option value='1.14.2'>1.14.2</option>
+                        <option value='1.14.1'>1.14.1</option>
+                        <option value='1.14'>1.14</option>
+                        <option value='1.13.2'>1.13.2</option>
+                        <option value='1.13.1'>1.13.1</option>
+                        <option value='1.13'>1.13</option>
+                        <option value='1.12.2'>1.12.2</option>
+                        <option value='1.12.1'>1.12.1</option>
+                        <option value='1.12'>1.12</option>
+                        <option value='1.11.2'>1.11.2</option>
+                        <option value='1.11.1'>1.11.1</option>
+                        <option value='1.11'>1.11</option>
+                        <option value='1.10.2'>1.10.2</option>
+                        <option value='1.10.1'>1.10.1</option>
+                        <option value='1.10.1'>1.10.1</option>
+                        <option value='1.10'>1.10</option>
+                        <option value='1.9.4'>1.9.4</option>
+                        <option value='1.9.3'>1.9.3</option>
+                        <option value='1.9.2'>1.9.2</option>
+                        <option value='1.9.1'>1.9.1</option>
+                        <option value='1.9'>1.9</option>
+                        <option value='1.8.9'>1.8.9</option>
+                        <option value='1.8.8'>1.8.8</option>
+                        <option value='1.8.7'>1.8.7</option>
+                        <option value='1.8.6'>1.8.6</option>
+                        <option value='1.8.5'>1.8.5</option>
+                        <option value='1.8.4'>1.8.4</option>
+                        <option value='1.8.3'>1.8.3</option>
+                        <option value='1.8.2'>1.8.2</option>
+                        <option value='1.8.1'>1.8.1</option>
+                        <option value='1.8'>1.8</option>
+                        <option value='1.7.10'>1.7.10</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label>Модлоадер</label>
+                <select id="mod-loader" class="form-control">
+                    <option value="">Любой</option>
+                    <option value="fabric">Fabric</option>
+                    <option value="forge">Forge</option>
+                    <option value="neoforge">NeoForge</option>
+                    <option value="quilt">Quilt</option>
+                </select>
+            </div>
+            <div class="col-md-6">
+                <label>Поиск</label>
+                <div class="input-group">
+                    <input type="text" id="mod-search" class="form-control" placeholder="Название мода...">
+                    <button id="search-btn" class="btn btn-primary">Искать</button>
+                </div>
+            </div>
+        </div>
+        <div id="mod-results"></div>
+    </div>
+</div>
+
+<!-- Модальное окно для выбора версии -->
+<div class="modal fade" id="versionModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content bg-dark text-light">
+            <div class="modal-header">
+                <h5 class="modal-title">Выберите версию мода</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="version-list">
+                <p>Загрузка...</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const serverId = {{ server.id }};
+    let currentProjectId = null;
+    let currentProjectType = 'mod';
+
+    function installMod(projectId, type) {
+        currentProjectId = projectId;
+        currentProjectType = type;
+        const version = document.getElementById('mc-version').value;
+        const loader = document.getElementById('mod-loader').value;
+        // Загружаем версии для этого проекта
+        let url = `/api/modrinth/versions/${projectId}`;
+        const params = new URLSearchParams();
+        if (version) params.append('version', version);
+        if (loader) params.append('loader', loader);
+        if (params.toString()) url += '?' + params.toString();
+        fetch(url)
+            .then(res => res.json())
+            .then(data => {
+                const container = document.getElementById('version-list');
+                if (data.versions && data.versions.length > 0) {
+                    let html = '<ul class="list-group list-group-flush bg-transparent">';
+                    data.versions.forEach(v => {
+                        html += `<li class="list-group-item bg-transparent text-light d-flex justify-content-between align-items-center">
+                            ${v.version_number} (${v.loaders.join(', ')})
+                            <button class="btn btn-sm btn-success" onclick="installVersion('${v.id}', '${v.version_number}')">Установить</button>
+                        </li>`;
+                    });
+                    html += '</ul>';
+                    container.innerHTML = html;
+                } else {
+                    container.innerHTML = '<p class="text-muted">Нет подходящих версий для выбранных фильтров.</p>';
+                }
+                $('#versionModal').modal('show');
+            })
+            .catch(err => {
+                document.getElementById('version-list').innerHTML = `<p class="text-danger">Ошибка: ${err}</p>`;
+                $('#versionModal').modal('show');
+            });
+    }
+
+    function installVersion(versionId, versionNumber) {
+        if (!currentProjectId) return;
+        fetch(`/api/modrinth/install/${serverId}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                project_id: currentProjectId,
+                version_id: versionId,
+                type: currentProjectType
+            })
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                alert(`Мод версии ${versionNumber} успешно установлен!`);
+                $('#versionModal').modal('hide');
+                location.reload();
+            } else {
+                alert('Ошибка установки: ' + (data.error || 'неизвестная ошибка'));
+            }
+        })
+        .catch(err => alert('Ошибка соединения: ' + err));
+    }
+
+    function renderProjects(projects, type) {
+        const container = document.getElementById('mod-results');
+        if (!projects || projects.length === 0) {
+            container.innerHTML = '<p class="text-muted">Ничего не найдено.</p>';
+            return;
+        }
+        let html = '<div class="list-group">';
+        projects.forEach(p => {
+            html += `<div class="list-group-item bg-dark text-light border-secondary">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h5>${p.title}</h5>
+                        <p class="mb-1">${p.description || 'Нет описания'}</p>
+                        <small>Загрузок: ${p.downloads}</small>
+                    </div>
+                    <div>
+                        <button class="btn btn-sm btn-success" onclick="installMod('${p.id}', '${type}')">Установить</button>
+                    </div>
+                </div>
+            </div>`;
+        });
+        html += '</div>';
+        container.innerHTML = html;
+    }
+
+    document.getElementById('search-btn').addEventListener('click', function() {
+        const query = document.getElementById('mod-search').value.trim();
+        if (!query) return;
+        const version = document.getElementById('mc-version').value;
+        const loader = document.getElementById('mod-loader').value;
+        let url = `/api/modrinth/search?query=${encodeURIComponent(query)}&type=mod`;
+        if (version) url += `&version=${encodeURIComponent(version)}`;
+        if (loader) url += `&loader=${encodeURIComponent(loader)}`;
+        fetch(url)
+            .then(res => res.json())
+            .then(data => {
+                if (data.projects) {
+                    renderProjects(data.projects, 'mod');
+                } else {
+                    document.getElementById('mod-results').innerHTML = `<p class="text-danger">Ошибка: ${data.error || 'неизвестная ошибка'}</p>`;
+                }
+            })
+            .catch(err => {
+                document.getElementById('mod-results').innerHTML = `<p class="text-danger">Ошибка соединения: ${err}</p>`;
+            });
+    });
+</script>
+
+<a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-secondary mt-3">Назад</a>
+{% endblock %}

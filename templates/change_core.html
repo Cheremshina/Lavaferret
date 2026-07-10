@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Смена ядра – {{ server.name }}{% endblock %}
+{% block content %}
+<h2>Смена ядра сервера {{ server.name }}</h2>
+<div class="card">
+    <div class="card-body">
+        <p>Текущее ядро: <strong>{{ server.server_type }} ({{ server.mc_version }})</strong></p>
+        <form method="post">
+            <div class="mb-2">
+                <label class="form-label">Тип ядра</label>
+                <select name="server_type" class="form-control" required>
+                    <option value="vanilla" {% if server.server_type=='vanilla' %}selected{% endif %}>Vanilla</option>
+                    <option value="spigot" {% if server.server_type=='spigot' %}selected{% endif %}>Spigot</option>
+                    <option value="paper" {% if server.server_type=='paper' %}selected{% endif %}>Paper</option>
+                </select>
+            </div>
+            <div class="mb-2">
+                <label class="form-label">Версия Minecraft</label>
+                <select name="mc_version" class="form-control" required>
+                    {% for v in versions.vanilla %}
+                    <option value="{{ v }}" {% if server.mc_version==v %}selected{% endif %}>{{ v }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button type="submit" class="btn btn-warning" onclick="return confirm('Сменить ядро? Это остановит сервер и заменит server.jar.')">Сменить ядро</button>
+        </form>
+        <p class="text-muted mt-2">Сервер будет остановлен, ядро заменено, после чего вы можете запустить его снова.</p>
+    </div>
+</div>
+<a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-secondary">Назад</a>
+<script>
+    // Обновление списка версий при смене типа
+    const versions = {{ versions|tojson }};
+    document.querySelector('select[name="server_type"]').addEventListener('change', function() {
+        const type = this.value;
+        const versionSelect = document.querySelector('select[name="mc_version"]');
+        versionSelect.innerHTML = '';
+        versions[type].forEach(v => {
+            const opt = document.createElement('option');
+            opt.value = v;
+            opt.textContent = v;
+            versionSelect.appendChild(opt);
+        });
+    });
+</script>
+{% endblock %}

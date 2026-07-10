@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Ваши серверы</h1>
+<div class="row">
+    {% for server, stats in server_stats %}
+    <div class="col-md-4">
+        <div class="card server-card">
+            <div class="card-body">
+                <h5 class="card-title">{{ server.name }}</h5>
+                <p class="card-text">
+                    <strong>Тип:</strong> {{ server.server_type }}<br>
+                    <strong>Версия:</strong> {{ server.mc_version }}<br>
+                    <strong>Хост:</strong> {{ server.ssh_host }}<br>
+                    <span class="badge bg-{% if server.status == 'running' %}success{% elif server.status == 'stopped' %}warning{% else %}secondary{% endif %} status-badge">
+                        {{ server.status }}
+                    </span>
+                </p>
+                <!-- Статистика системы -->
+                {% if server.status == 'running' %}
+                <div class="mt-2">
+                    <div>
+                        <span>CPU: {{ stats.cpu_percent }}%</span>
+                        <div class="progress" style="height: 6px;">
+                            <div class="progress-bar bg-info" role="progressbar" style="width: {{ stats.cpu_percent }}%;" aria-valuenow="{{ stats.cpu_percent }}" aria-valuemin="0" aria-valuemax="100"></div>
+                        </div>
+                    </div>
+                    <div class="mt-1">
+                        <span>RAM: {{ stats.ram_used_mb }} МБ / {{ stats.ram_total_mb }} МБ ({{ stats.ram_percent }}%)</span>
+                        <div class="progress" style="height: 6px;">
+                            <div class="progress-bar bg-success" role="progressbar" style="width: {{ stats.ram_percent }}%;" aria-valuenow="{{ stats.ram_percent }}" aria-valuemin="0" aria-valuemax="100"></div>
+                        </div>
+                    </div>
+                </div>
+                {% else %}
+                <p class="text-muted mt-2">Статистика недоступна</p>
+                {% endif %}
+                <div class="mt-2">
+                    <a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-primary btn-sm">Управление</a>
+                    <a href="{{ url_for('console', server_id=server.id) }}" class="btn btn-info btn-sm">Консоль</a>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <p>Нет добавленных серверов. <a href="{{ url_for('add_server') }}">Добавить первый</a></p>
+    {% endfor %}
+</div>
+
+<script>
+    // Функция обновления статистики для каждого сервера
+    function updateStats(serverId, statsElement) {
+        fetch(`/api/server/${serverId}/stats`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    statsElement.innerHTML = `<span class="text-danger">Ошибка</span>`;
+                    return;
+                }
+                statsElement.innerHTML = `
+                    <div>
+                        <span>CPU: ${data.cpu_percent || 0}%</span>
+                        <div class="progress" style="height: 6px;">
+                            <div class="progress-bar bg-info" role="progressbar"
+                                 style="width: ${data.cpu_percent || 0}%;"
+                                 aria-valuenow="${data.cpu_percent || 0}"
+                                 aria-valuemin="0" aria-valuemax="100">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mt-1">
+                        <span>RAM: ${data.ram_used_mb || 0} МБ / ${data.ram_total_mb || 0} МБ (${data.ram_percent || 0}%)</span>
+                        <div class="progress" style="height: 6px;">
+                            <div class="progress-bar bg-success" role="progressbar"
+                                 style="width: ${data.ram_percent || 0}%;"
+                                 aria-valuenow="${data.ram_percent || 0}"
+                                 aria-valuemin="0" aria-valuemax="100">
+                            </div>
+                        </div>
+                    </div>
+                `;
+            })
+            .catch(() => {
+                statsElement.innerHTML = `<span class="text-danger">Нет данных</span>`;
+            });
+    }
+
+    // После загрузки страницы запускаем обновление для каждого сервера
+    document.addEventListener('DOMContentLoaded', function() {
+        const statContainers = document.querySelectorAll('.server-stats');
+        statContainers.forEach(container => {
+            const serverId = container.dataset.serverId;
+            if (serverId) {
+                // Обновляем сразу
+                updateStats(serverId, container);
+                // И каждые 3 секунды
+                setInterval(() => updateStats(serverId, container), 3000);
+            }
+        });
+    });
+</script>
+{% endblock %}

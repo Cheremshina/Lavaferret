@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Добавить новый Minecraft-сервер</h2>
+<form method="post">
+    <div class="mb-3">
+        <label>Название сервера</label>
+        <input type="text" name="name" class="form-control" required>
+    </div>
+    <div class="mb-3">
+        <label>Тип сервера</label>
+        <select name="server_type" id="server_type" class="form-control" required>
+            <option value="vanilla">Vanilla</option>
+            <option value="spigot">Spigot</option>
+            <option value="paper">Paper</option>
+        </select>
+    </div>
+    <div class="mb-3">
+        <label>Версия Minecraft</label>
+        <select name="version" id="version" class="form-control" required>
+            <!-- Заполняется JS или можно передать из app.py -->
+            {% for v in versions.vanilla %}
+            <option value="{{ v }}">{{ v }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="mb-3">
+        <label>SSH-хост</label>
+        <input type="text" name="host" class="form-control" required>
+    </div>
+    <div class="mb-3">
+        <label>SSH-порт</label>
+        <input type="number" name="port" class="form-control" value="22" required>
+    </div>
+    <div class="mb-3">
+        <label>SSH-пользователь</label>
+        <input type="text" name="user" class="form-control" required>
+    </div>
+    <div class="mb-3">
+        <label>SSH-пароль</label>
+        <input type="password" name="password" class="form-control" required>
+    </div>
+    <button type="submit" class="btn btn-success">Развернуть сервер</button>
+    <a href="{{ url_for('index') }}" class="btn btn-secondary">Отмена</a>
+</form>
+
+<script>
+    // Обновление списка версий при изменении типа
+    const versions = {{ versions|tojson }};
+    document.getElementById('server_type').addEventListener('change', function() {
+        const type = this.value;
+        const versionSelect = document.getElementById('version');
+        versionSelect.innerHTML = '';
+        versions[type].forEach(v => {
+            const opt = document.createElement('option');
+            opt.value = v;
+            opt.textContent = v;
+            versionSelect.appendChild(opt);
+        });
+    });
+</script>
+{% endblock %}

@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Бэкапы – {{ server.name }}{% endblock %}
+{% block content %}
+<h2>Бэкапы сервера {{ server.name }}</h2>
+<div class="card">
+    <div class="card-body">
+        <form method="post" style="display:inline;">
+            <button type="submit" name="create" class="btn btn-primary">Создать бэкап</button>
+        </form>
+        <hr>
+        <table class="table table-dark table-striped">
+            <thead>
+                <tr>
+                    <th>Имя</th>
+                    <th>Размер</th>
+                    <th>Дата</th>
+                    <th>Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for b in backups %}
+                <tr>
+                    <td>{{ b.name }}</td>
+                    <td>{{ b.size }}</td>
+                    <td>{{ b.date }}</td>
+                    <td>
+                        <form method="post" style="display:inline;">
+                            <input type="hidden" name="backup_name" value="{{ b.name }}">
+                            <button type="submit" name="restore" class="btn btn-sm btn-warning" onclick="return confirm('Восстановить бэкап? Сервер будет перезапущен.')">Восстановить</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+<a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-secondary">Назад</a>
+{% endblock %}

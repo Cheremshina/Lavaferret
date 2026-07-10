@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Консоль – {{ server.name }}{% endblock %}
+{% block content %}
+<h2>Консоль сервера {{ server.name }}</h2>
+<div class="card">
+    <div class="card-body">
+        <div id="console-output" style="background: #0d1a2b; color: #c8d6e5; padding: 10px; border-radius: 5px; height: 500px; overflow-y: auto; font-family: monospace; white-space: pre-wrap; font-size: 14px;"></div>
+        <div class="input-group mt-2">
+            <input type="text" id="command-input" class="form-control" placeholder="Введите команду..." autofocus>
+            <button id="send-command" class="btn btn-primary">Отправить</button>
+            <button id="clear-console" class="btn btn-secondary">Очистить</button>
+        </div>
+        <div id="console-error" class="text-danger mt-1" style="display:none;"></div>
+    </div>
+</div>
+<a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-secondary mt-3">← Назад к управлению</a>
+
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script>
+    const serverId = {{ server.id }};
+    const socket = io();
+
+    // Подключаемся к комнате сервера
+    socket.on('connect', function() {
+        socket.emit('join', { server_id: serverId });
+    });
+
+    // При успешном подключении
+    socket.on('joined', function(data) {
+        console.log('Connected to server console');
+    });
+
+    // Обработка ошибок
+    socket.on('error', function(data) {
+        document.getElementById('console-error').textContent = 'Ошибка: ' + (data.message || 'неизвестная ошибка');
+        document.getElementById('console-error').style.display = 'block';
+        setTimeout(() => {
+            document.getElementById('console-error').style.display = 'none';
+        }, 5000);
+    });
+
+    // Подтверждение отправки команды
+    socket.on('command_sent', function() {
+        document.getElementById('console-error').style.display = 'none';
+        document.getElementById('command-input').value = '';
+    });
+
+    // Логи получаем через AJAX (каждые 2 секунды)
+    function fetchLogs() {
+        fetch(`/server/${serverId}/api/logs`)
+            .then(res => res.json())
+            .then(data => {
+                const output = document.getElementById('console-output');
+                if (data.logs) {
+                    output.textContent = data.logs;
+                } else {
+                    output.textContent = 'Нет логов или сервер не запущен.';
+                }
+                output.scrollTop = output.scrollHeight;
+            })
+            .catch(() => {});
+        socket.on('connect', function() {
+        document.getElementById('console-output').textContent = '';
+        socket.emit('join', { server_id: serverId });
+            });
+    }
+
+    // Отправка команды через WebSocket
+    document.getElementById('send-command').addEventListener('click', function() {
+        const input = document.getElementById('command-input');
+        const cmd = input.value.trim();
+        if (!cmd) return;
+        socket.emit('console_command', { server_id: serverId, command: cmd });
+    });
+
+    document.getElementById('command-input').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            document.getElementById('send-command').click();
+        }
+    });
+
+    document.getElementById('clear-console').addEventListener('click', function() {
+        document.getElementById('console-output').textContent = '';
+    });
+
+    // Первая загрузка логов
+    fetchLogs();
+    // Обновление каждые 2 секунды
+    setInterval(fetchLogs, 2000);
+</script>
+{% endblock %}

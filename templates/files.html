@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Файлы – {{ server.name }}{% endblock %}
+{% block content %}
+<h2>Файлы сервера {{ server.name }}</h2>
+<div class="card">
+    <div class="card-body">
+        <div class="mb-3">
+            <a href="{{ url_for('files', server_id=server.id, path=path|dirname if path else '') }}" class="btn btn-secondary btn-sm">⬆ На уровень выше</a>
+            <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#newDirModal">📁 Создать директорию</button>
+            <button class="btn btn-success btn-sm" data-bs-toggle="modal" data-bs-target="#uploadFileModal">⬆ Загрузить файл</button>
+        </div>
+        <table class="table table-dark table-striped">
+            <thead>
+                <tr>
+                    <th>Имя</th>
+                    <th>Размер</th>
+                    <th>Дата изменения</th>
+                    <th>Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for f in files %}
+                <tr>
+                    <td>
+                        {% if f.perms.startswith('d') %}
+                            📁 <a href="{{ url_for('files', server_id=server.id, path=(path + '/' + f.name) if path else f.name) }}">{{ f.name }}</a>
+                        {% else %}
+                            📄 {{ f.name }}
+                        {% endif %}
+                    </td>
+                    <td>{{ f.size }}</td>
+                    <td>{{ f.date }}</td>
+                    <td>
+                        {% if not f.perms.startswith('d') %}
+                        <a href="{{ url_for('download_file', server_id=server.id, file=(path + '/' + f.name) if path else f.name) }}" class="btn btn-sm btn-outline-primary">Скачать</a>
+                        <a href="#" class="btn btn-sm btn-outline-danger" onclick="if(confirm('Удалить?')){ fetch('{{ url_for('delete_file', server_id=server.id) }}?file={{ (path + '/' + f.name) if path else f.name }}', {method:'POST'}).then(()=>location.reload()) }">Удалить</a>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Модальные окна -->
+<div class="modal fade" id="newDirModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content bg-dark text-light">
+            <div class="modal-header">
+                <h5 class="modal-title">Создать директорию</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="post">
+                <div class="modal-body">
+                    <input type="text" name="new_dir" class="form-control" placeholder="Имя папки" required>
+                </div>
+                <div class="modal-footer">
+                    <button type="submit" class="btn btn-primary">Создать</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="uploadFileModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content bg-dark text-light">
+            <div class="modal-header">
+                <h5 class="modal-title">Загрузить файл</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="post" enctype="multipart/form-data">
+                <div class="modal-body">
+                    <input type="file" name="file" class="form-control" required>
+                </div>
+                <div class="modal-footer">
+                    <button type="submit" class="btn btn-success">Загрузить</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-secondary">Назад</a>
+{% endblock %}

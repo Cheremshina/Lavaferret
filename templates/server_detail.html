@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}Управление сервером – {{ server.name }}{% endblock %}
+{% block content %}
+<h2>Сервер: {{ server.name }}</h2>
+<div class="card mb-3">
+    <div class="card-body">
+        <p><strong>Тип:</strong> {{ server.server_type }}</p>
+        <p><strong>Версия:</strong> {{ server.mc_version }}</p>
+        <p><strong>Хост:</strong> {{ server.ssh_host }}:{{ server.ssh_port }}</p>
+        <p><strong>Пользователь:</strong> {{ server.ssh_user }}</p>
+        <p><strong>Статус:</strong> <span class="badge bg-{% if server.status == 'running' %}success{% elif server.status == 'stopped' %}warning{% else %}secondary{% endif %}">{{ server.status }}</span></p>
+        <div>
+            <a href="{{ url_for('start_server_route', server_id=server.id) }}" class="btn btn-success">▶ Запустить</a>
+            <a href="{{ url_for('stop_server_route', server_id=server.id) }}" class="btn btn-warning">⏹ Остановить</a>
+            <a href="{{ url_for('restart_server_route', server_id=server.id) }}" class="btn btn-info">🔄 Перезапустить</a>
+            <a href="{{ url_for('console', server_id=server.id) }}" class="btn btn-primary">🖥️ Полноэкранная консоль</a>
+            <form action="{{ url_for('delete_server_route', server_id=server.id) }}" method="post" style="display:inline;">
+                <button type="submit" class="btn btn-danger" onclick="return confirm('Удалить сервер? Это необратимо.')">🗑 Удалить</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Статистика системы (обновляется в реальном времени) -->
+<div class="card mb-3">
+    <div class="card-header">📊 Нагрузка системы</div>
+    <div class="card-body" id="server-stats-detail" data-server-id="{{ server.id }}">
+        <div id="stats-content">Загрузка...</div>
+    </div>
+</div>
+
+<!-- Консоль и логи -->
+<div class="row">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">🖥️ Консоль (ввод команд)</div>
+            <div class="card-body">
+                <div id="mini-console-output" style="background: #0d1a2b; color: #c8d6e5; padding: 10px; border-radius: 5px; height: 200px; overflow-y: auto; font-family: monospace; white-space: pre-wrap; font-size: 13px;"></div>
+                <div class="input-group mt-2">
+                    <input type="text" id="mini-command-input" class="form-control" placeholder="Введите команду...">
+                    <button id="mini-send-command" class="btn btn-primary">Отправить</button>
+                </div>
+                <div id="mini-console-error" class="text-danger mt-1" style="display:none;"></div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">📋 Последние логи</div>
+            <div class="card-body">
+                <pre id="server-logs" style="background: #0d1a2b; color: #c8d6e5; padding: 10px; border-radius: 5px; height: 200px; overflow-y: auto; font-family: monospace; font-size: 13px;">{{ logs }}</pre>
+                <button id="refresh-logs" class="btn btn-secondary btn-sm mt-2">Обновить логи</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<a href="{{ url_for('index') }}" class="btn btn-secondary mt-3">← Назад к списку</a>
+
+<script>
+    const serverId = {{ server.id }};
+
+    // Мини-консоль: автообновление
+    function fetchMiniLogs() {
+        fetch(`/server/${serverId}/api/logs`)
+            .then(res => res.json())
+            .then(data => {
+                const output = document.getElementById('mini-console-output');
+                output.textContent = data.logs || 'Нет данных';
+                output.scrollTop = output.scrollHeight;
+            })
+            .catch(() => {});
+    }
+
+    // Отправка команды из мини-консоли
+    document.getElementById('mini-send-command').addEventListener('click', function() {
+        const input = document.getElementById('mini-command-input');
+        const cmd = input.value.trim();
+        if (!cmd) return;
+        fetch(`/server/${serverId}/api/command`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({command: cmd})
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.status === 'ok') {
+                input.value = '';
+                document.getElementById('mini-console-error').style.display = 'none';
+                // Подождём и обновим логи
+                setTimeout(fetchMiniLogs, 500);
+            } else {
+                document.getElementById('mini-console-error').textContent = 'Ошибка: ' + (data.message || 'неизвестная ошибка');
+                document.getElementById('mini-console-error').style.display = 'block';
+            }
+        })
+        .catch(err => {
+            document.getElementById('mini-console-error').textContent = 'Ошибка соединения: ' + err;
+            document.getElementById('mini-console-error').style.display = 'block';
+        });
+    });
+
+    // Обновление логов по кнопке
+    document.getElementById('refresh-logs').addEventListener('click', function() {
+        fetch(`/server/${serverId}/api/logs`)
+            .then(res => res.json())
+            .then(data => {
+                document.getElementById('server-logs').textContent = data.logs || 'Нет данных';
+            })
+            .catch(() => {});
+    });
+
+    // Автообновление мини-консоли каждые 3 секунды
+    fetchMiniLogs();
+    setInterval(fetchMiniLogs, 3000);
+</script>
+<!-- Скрипт для статистики -->
+<script>
+    function updateDetailStats(serverId) {
+        fetch(`/api/server/${serverId}/stats`)
+            .then(response => response.json())
+            .then(data => {
+                const container = document.getElementById('stats-content');
+                if (data.error) {
+                    container.innerHTML = `<span class="text-danger">Ошибка получения данных</span>`;
+                    return;
+                }
+                container.innerHTML = `
+                    <div class="row">
+                        <div class="col-md-6">
+                            <strong>CPU:</strong> ${data.cpu_percent || 0}%
+                            <div class="progress" style="height: 10px;">
+                                <div class="progress-bar bg-info" role="progressbar"
+                                     style="width: ${data.cpu_percent || 0}%;"
+                                     aria-valuenow="${data.cpu_percent || 0}"
+                                     aria-valuemin="0" aria-valuemax="100">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <strong>RAM:</strong> ${data.ram_used_mb || 0} МБ / ${data.ram_total_mb || 0} МБ (${data.ram_percent || 0}%)
+                            <div class="progress" style="height: 10px;">
+                                <div class="progress-bar bg-success" role="progressbar"
+                                     style="width: ${data.ram_percent || 0}%;"
+                                     aria-valuenow="${data.ram_percent || 0}"
+                                     aria-valuemin="0" aria-valuemax="100">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            })
+            .catch(() => {
+                document.getElementById('stats-content').innerHTML = `<span class="text-danger">Нет данных</span>`;
+            });
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        const detailDiv = document.getElementById('server-stats-detail');
+        if (detailDiv) {
+            const serverId = detailDiv.dataset.serverId;
+            if (serverId) {
+                updateDetailStats(serverId);
+                setInterval(() => updateDetailStats(serverId), 3000);
+            }
+        }
+    });
+</script>
+{% endblock %}

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Смена ядра – {{ server.name }}{% endblock %}
+{% block content %}
+<h2>Смена ядра сервера {{ server.name }}</h2>
+<div class="card">
+    <div class="card-body">
+        <p>Текущее ядро: <strong>{{ server.server_type }} {{ server.mc_version }}</strong></p>
+        <form method="post">
+            <div class="mb-3">
+                <label class="form-label">Выберите ядро</label>
+                <select name="server_type" id="core_type" class="form-control" required>
+                    {% for type, versions in available_cores.items() %}
+                    <option value="{{ type }}" {% if type == server.server_type %}selected{% endif %}>{{ type|capitalize }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Версия</label>
+                <select name="mc_version" id="core_version" class="form-control" required>
+                    {% for v in available_cores[server.server_type] %}
+                    <option value="{{ v }}" {% if v == server.mc_version %}selected{% endif %}>{{ v }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button type="submit" class="btn btn-warning" onclick="return confirm('Смена ядра приведёт к остановке сервера и замене server.jar. Продолжить?')">Сменить ядро</button>
+        </form>
+        <small class="text-muted mt-2 d-block">После смены ядра не забудьте перезапустить сервер.</small>
+    </div>
+</div>
+<a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-secondary">Назад</a>
+
+<script>
+    // Обновление списка версий при изменении типа ядра
+    const versions = {{ available_cores|tojson }};
+    document.getElementById('core_type').addEventListener('change', function() {
+        const type = this.value;
+        const versionSelect = document.getElementById('core_version');
+        versionSelect.innerHTML = '';
+        versions[type].forEach(v => {
+            const opt = document.createElement('option');
+            opt.value = v;
+            opt.textContent = v;
+            versionSelect.appendChild(opt);
+        });
+    });
+</script>
+{% endblock %}

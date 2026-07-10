@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Настройки – {{ server.name }}{% endblock %}
+{% block content %}
+<h2>Общие настройки</h2>
+<div class="card">
+    <div class="card-body">
+        <form method="post">
+            <div class="mb-2">
+                <label class="form-label">Название сервера</label>
+                <input type="text" name="display_name" value="{{ server.name }}" class="form-control">
+            </div>
+            <div class="mb-2">
+                <label class="form-label">Описание</label>
+                <textarea name="description" class="form-control" rows="3">Описание сервера</textarea>
+            </div>
+            <button type="submit" class="btn btn-primary">Сохранить</button>
+        </form>
+    </div>
+</div>
+<a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-secondary">Назад</a>
+{% endblock %}

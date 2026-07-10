@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Конфиг – {{ server.name }}{% endblock %}
+{% block content %}
+<h2>Редактирование server.properties</h2>
+<div class="card">
+    <div class="card-body">
+        <form method="post">
+            {% for key, value in props.items() %}
+            <div class="mb-2">
+                <label class="form-label">{{ key }}</label>
+                <input type="text" name="prop_{{ key }}" value="{{ value }}" class="form-control">
+            </div>
+            {% endfor %}
+            <button type="submit" class="btn btn-primary">Сохранить</button>
+        </form>
+    </div>
+</div>
+<a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-secondary">Назад</a>
+{% endblock %}

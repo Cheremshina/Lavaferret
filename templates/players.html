@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Игроки – {{ server.name }}{% endblock %}
+{% block content %}
+<h2>Игроки сервера {{ server.name }}</h2>
+
+<div class="card">
+    <div class="card-header">Список игроков с правами OP</div>
+    <div class="card-body">
+        {% if ops %}
+        <ul class="list-group list-group-flush bg-transparent">
+            {% for op in ops %}
+            <li class="list-group-item bg-transparent text-light">{{ op.name }}</li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-muted">В этом списке нет игроков.</p>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">Белый список (Whitelist)</div>
+    <div class="card-body">
+        {% if whitelist %}
+        <ul class="list-group list-group-flush bg-transparent">
+            {% for w in whitelist %}
+            <li class="list-group-item bg-transparent text-light">{{ w.name }}</li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-muted">В этом списке нет игроков.</p>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">Забаненные игроки</div>
+    <div class="card-body">
+        {% if bans %}
+        <ul class="list-group list-group-flush bg-transparent">
+            {% for b in bans %}
+            <li class="list-group-item bg-transparent text-light">{{ b.name }}</li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-muted">В этом списке нет игроков.</p>
+        {% endif %}
+    </div>
+</div>
+
+<a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-secondary">Назад</a>
+{% endblock %}
