@@ -21,37 +21,17 @@
     </div>
 </div>
 
-<!-- Статистика системы (обновляется в реальном времени) -->
-<div class="card mb-3">
-    <div class="card-header">📊 Нагрузка системы</div>
-    <div class="card-body" id="server-stats-detail" data-server-id="{{ server.id }}">
-        <div id="stats-content">Загрузка...</div>
-    </div>
-</div>
-
-<!-- Консоль и логи -->
-<div class="row">
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">🖥️ Консоль (ввод команд)</div>
-            <div class="card-body">
-                <div id="mini-console-output" style="background: #0d1a2b; color: #c8d6e5; padding: 10px; border-radius: 5px; height: 200px; overflow-y: auto; font-family: monospace; white-space: pre-wrap; font-size: 13px;"></div>
-                <div class="input-group mt-2">
-                    <input type="text" id="mini-command-input" class="form-control" placeholder="Введите команду...">
-                    <button id="mini-send-command" class="btn btn-primary">Отправить</button>
-                </div>
-                <div id="mini-console-error" class="text-danger mt-1" style="display:none;"></div>
-            </div>
+<!-- Блок: Консоль + Логи -->
+<div class="card">
+    <div class="card-header">🖥️ Консоль и логи</div>
+    <div class="card-body">
+        <div id="console-output" style="background: #0d1a2b; color: #c8d6e5; padding: 10px; border-radius: 5px; height: 300px; overflow-y: auto; font-family: monospace; white-space: pre-wrap; font-size: 14px;"></div>
+        <div class="input-group mt-2">
+            <input type="text" id="command-input" class="form-control" placeholder="Введите команду..." autofocus>
+            <button id="send-command" class="btn btn-primary">Отправить</button>
+            <button id="clear-console" class="btn btn-secondary">Очистить</button>
         </div>
-    </div>
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">📋 Последние логи</div>
-            <div class="card-body">
-                <pre id="server-logs" style="background: #0d1a2b; color: #c8d6e5; padding: 10px; border-radius: 5px; height: 200px; overflow-y: auto; font-family: monospace; font-size: 13px;">{{ logs }}</pre>
-                <button id="refresh-logs" class="btn btn-secondary btn-sm mt-2">Обновить логи</button>
-            </div>
-        </div>
+        <div id="console-error" class="text-danger mt-1" style="display:none;"></div>
     </div>
 </div>
 
@@ -60,21 +40,21 @@
 <script>
     const serverId = {{ server.id }};
 
-    // Мини-консоль: автообновление
-    function fetchMiniLogs() {
+    // Получение логов
+    function fetchLogs() {
         fetch(`/server/${serverId}/api/logs`)
             .then(res => res.json())
             .then(data => {
-                const output = document.getElementById('mini-console-output');
-                output.textContent = data.logs || 'Нет данных';
+                const output = document.getElementById('console-output');
+                output.textContent = data.logs || 'Нет логов или сервер не запущен.';
                 output.scrollTop = output.scrollHeight;
             })
             .catch(() => {});
     }
 
-    // Отправка команды из мини-консоли
-    document.getElementById('mini-send-command').addEventListener('click', function() {
-        const input = document.getElementById('mini-command-input');
+    // Отправка команды
+    document.getElementById('send-command').addEventListener('click', function() {
+        const input = document.getElementById('command-input');
         const cmd = input.value.trim();
         if (!cmd) return;
         fetch(`/server/${serverId}/api/command`, {
@@ -86,84 +66,34 @@
         .then(data => {
             if (data.status === 'ok') {
                 input.value = '';
-                document.getElementById('mini-console-error').style.display = 'none';
-                // Подождём и обновим логи
-                setTimeout(fetchMiniLogs, 500);
+                document.getElementById('console-error').style.display = 'none';
+                setTimeout(fetchLogs, 500);
             } else {
-                document.getElementById('mini-console-error').textContent = 'Ошибка: ' + (data.message || 'неизвестная ошибка');
-                document.getElementById('mini-console-error').style.display = 'block';
+                document.getElementById('console-error').textContent = 'Ошибка: ' + (data.message || 'неизвестная ошибка');
+                document.getElementById('console-error').style.display = 'block';
             }
         })
         .catch(err => {
-            document.getElementById('mini-console-error').textContent = 'Ошибка соединения: ' + err;
-            document.getElementById('mini-console-error').style.display = 'block';
+            document.getElementById('console-error').textContent = 'Ошибка соединения: ' + err;
+            document.getElementById('console-error').style.display = 'block';
         });
     });
 
-    // Обновление логов по кнопке
-    document.getElementById('refresh-logs').addEventListener('click', function() {
-        fetch(`/server/${serverId}/api/logs`)
-            .then(res => res.json())
-            .then(data => {
-                document.getElementById('server-logs').textContent = data.logs || 'Нет данных';
-            })
-            .catch(() => {});
-    });
-
-    // Автообновление мини-консоли каждые 3 секунды
-    fetchMiniLogs();
-    setInterval(fetchMiniLogs, 3000);
-</script>
-<!-- Скрипт для статистики -->
-<script>
-    function updateDetailStats(serverId) {
-        fetch(`/api/server/${serverId}/stats`)
-            .then(response => response.json())
-            .then(data => {
-                const container = document.getElementById('stats-content');
-                if (data.error) {
-                    container.innerHTML = `<span class="text-danger">Ошибка получения данных</span>`;
-                    return;
-                }
-                container.innerHTML = `
-                    <div class="row">
-                        <div class="col-md-6">
-                            <strong>CPU:</strong> ${data.cpu_percent || 0}%
-                            <div class="progress" style="height: 10px;">
-                                <div class="progress-bar bg-info" role="progressbar"
-                                     style="width: ${data.cpu_percent || 0}%;"
-                                     aria-valuenow="${data.cpu_percent || 0}"
-                                     aria-valuemin="0" aria-valuemax="100">
-                                </div>
-                            </div>
-                        </div>
-                        <div class="col-md-6">
-                            <strong>RAM:</strong> ${data.ram_used_mb || 0} МБ / ${data.ram_total_mb || 0} МБ (${data.ram_percent || 0}%)
-                            <div class="progress" style="height: 10px;">
-                                <div class="progress-bar bg-success" role="progressbar"
-                                     style="width: ${data.ram_percent || 0}%;"
-                                     aria-valuenow="${data.ram_percent || 0}"
-                                     aria-valuemin="0" aria-valuemax="100">
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                `;
-            })
-            .catch(() => {
-                document.getElementById('stats-content').innerHTML = `<span class="text-danger">Нет данных</span>`;
-            });
-    }
-
-    document.addEventListener('DOMContentLoaded', function() {
-        const detailDiv = document.getElementById('server-stats-detail');
-        if (detailDiv) {
-            const serverId = detailDiv.dataset.serverId;
-            if (serverId) {
-                updateDetailStats(serverId);
-                setInterval(() => updateDetailStats(serverId), 3000);
-            }
+    // Отправка по Enter
+    document.getElementById('command-input').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            document.getElementById('send-command').click();
         }
     });
+
+    // Очистка экрана
+    document.getElementById('clear-console').addEventListener('click', function() {
+        document.getElementById('console-output').textContent = '';
+    });
+
+    // Первая загрузка логов
+    fetchLogs();
+    // Автообновление каждые 3 секунды
+    setInterval(fetchLogs, 3000);
 </script>
 {% endblock %}

@@ -5,6 +5,9 @@ class Config:
     SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-key-please-change'
     SQLALCHEMY_DATABASE_URI = 'sqlite:///servers.db'
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        'connect_args': {'check_same_thread': False}
+    }
 
     # Автоматически генерируем или загружаем ключ Fernet
     _key_file = 'fernet.key'

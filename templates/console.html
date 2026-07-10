@@ -18,74 +18,40 @@
 <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 <script>
     const serverId = {{ server.id }};
-    const socket = io();
 
-    // Подключаемся к комнате сервера
-    socket.on('connect', function() {
-        socket.emit('join', { server_id: serverId });
-    });
-
-    // При успешном подключении
-    socket.on('joined', function(data) {
-        console.log('Connected to server console');
-    });
-
-    // Обработка ошибок
-    socket.on('error', function(data) {
-        document.getElementById('console-error').textContent = 'Ошибка: ' + (data.message || 'неизвестная ошибка');
-        document.getElementById('console-error').style.display = 'block';
-        setTimeout(() => {
-            document.getElementById('console-error').style.display = 'none';
-        }, 5000);
-    });
-
-    // Подтверждение отправки команды
-    socket.on('command_sent', function() {
-        document.getElementById('console-error').style.display = 'none';
-        document.getElementById('command-input').value = '';
-    });
-
-    // Логи получаем через AJAX (каждые 2 секунды)
     function fetchLogs() {
         fetch(`/server/${serverId}/api/logs`)
             .then(res => res.json())
             .then(data => {
                 const output = document.getElementById('console-output');
-                if (data.logs) {
-                    output.textContent = data.logs;
-                } else {
-                    output.textContent = 'Нет логов или сервер не запущен.';
-                }
+                output.textContent = data.logs || 'Нет логов';
                 output.scrollTop = output.scrollHeight;
             })
             .catch(() => {});
-        socket.on('connect', function() {
-        document.getElementById('console-output').textContent = '';
-        socket.emit('join', { server_id: serverId });
-            });
     }
 
-    // Отправка команды через WebSocket
     document.getElementById('send-command').addEventListener('click', function() {
         const input = document.getElementById('command-input');
         const cmd = input.value.trim();
         if (!cmd) return;
-        socket.emit('console_command', { server_id: serverId, command: cmd });
+        fetch(`/server/${serverId}/api/command`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({command: cmd})
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.status === 'ok') {
+                input.value = '';
+                setTimeout(fetchLogs, 500);
+            } else {
+                alert('Ошибка: ' + data.message);
+            }
+        })
+        .catch(err => alert('Ошибка соединения'));
     });
 
-    document.getElementById('command-input').addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') {
-            document.getElementById('send-command').click();
-        }
-    });
-
-    document.getElementById('clear-console').addEventListener('click', function() {
-        document.getElementById('console-output').textContent = '';
-    });
-
-    // Первая загрузка логов
     fetchLogs();
-    // Обновление каждые 2 секунды
-    setInterval(fetchLogs, 2000);
+    setInterval(fetchLogs, 3000);
 </script>
 {% endblock %}

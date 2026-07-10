@@ -107,6 +107,9 @@ def install_modrinth_project(client, server_name, project_id, version_id, projec
     return filename
 
 def ssh_connect(host, port, user, password):
+    # Проверка на пустые значения
+    if not all([host, port, user, password]):
+        raise ValueError("All arguments (host, port, user, password) are required")
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
@@ -171,50 +174,28 @@ def ensure_java_installed(client, password=None):
     return True
 
 def is_server_running(client, server_name):
-    """
-    Проверяет, запущен ли сервер.
-    Возвращает True, если найден процесс Java, screen-сессия или лог содержит 'Done'.
-    """
-    username = client._transport.get_username()
-    server_dir = f"/home/{username}/minecraft_servers/{server_name}"
-
-    # 1. Проверка по процессу Java (самый надёжный способ)
-    # Ищем процесс с server.jar и путём к папке сервера
-    cmd_ps = f"ps aux | grep -v grep | grep 'java.*server.jar' | grep '{server_dir}' | wc -l"
+    # Проверка по процессу Java
+    cmd_ps = f"ps aux | grep -v grep | grep 'java.*server.jar' | grep '/home/[^/]*/minecraft_servers/{server_name}' | wc -l"
     try:
         out, err, code = execute_command(client, cmd_ps, timeout=5)
         if code == 0 and int(out.strip()) > 0:
             return True
     except:
         pass
-
-    # 2. Проверка screen-сессии
-    cmd_screen = f"screen -ls | grep 'mc-{server_name}'"
+    # Проверка screen
     try:
-        out, err, code = execute_command(client, cmd_screen, timeout=5)
+        out, err, code = execute_command(client, f"screen -ls | grep 'mc-{server_name}'", timeout=5)
         if code == 0 and out.strip():
             return True
     except:
         pass
-
-    # 3. Проверка лога (если есть строка Done)
-    try:
-        logs = get_logs(client, server_name, lines=1)
-        if "Done" in logs:
-            return True
-    except:
-        pass
-
     return False
 
 def get_status(client, server_name):
-    """
-    Определяет статус сервера: 'running', 'stopped' или 'not_deployed'.
-    """
     if is_server_running(client, server_name):
         return 'running'
     else:
-        # Проверяем, существует ли папка сервера
+        # Проверка существования папки
         cmd_dir = f"test -d /home/{client._transport.get_username()}/minecraft_servers/{server_name}"
         _, _, code_dir = execute_command(client, cmd_dir, timeout=5)
         if code_dir == 0:
@@ -223,20 +204,24 @@ def get_status(client, server_name):
             return 'not_deployed'
 
 def get_logs(client, server_name, lines=50):
-    log_path = f"/home/{client._transport.get_username()}/minecraft_servers/{server_name}/logs/latest.log"
-    # Если лог не найден, пробуем server.log (для nohup)
-    cmd = f"tail -n {lines} {log_path} 2>/dev/null || tail -n {lines} /home/{client._transport.get_username()}/minecraft_servers/{server_name}/server.log 2>/dev/null || echo 'Log file not found'"
+    username = client._transport.get_username()
+    log_path = f"/home/{username}/minecraft_servers/{server_name}/logs/latest.log"
+    cmd = f"tail -n {lines} {log_path} 2>/dev/null || echo 'Log file not found'"
     out, err, code = execute_command(client, cmd, timeout=10)
     return out
 
-def wait_for_server(client, server_name, timeout=90):
+def wait_for_server(client, server_name, timeout=40):
+    """
+    Ожидает запуска сервера, проверяя статус каждые 2 секунды.
+    """
     start_time = time.time()
     while time.time() - start_time < timeout:
         if is_server_running(client, server_name):
+            # Дополнительно проверяем логи на готовность
             logs = get_logs(client, server_name, lines=3)
             if "Done" in logs or "For help, type" in logs:
                 return True
-        time.sleep(5)
+        time.sleep(2)
     return False
 
 def ensure_screen_installed(client, password=None):
