@@ -8,3 +8,7 @@ Flask-Compress~=1.24
 cryptography~=49.0.0
 paramiko~=5.0.0
 Flask-SQLAlchemy~=3.1.1
+python-socketio==5.10.0
+engineio==4.7.0
+gevent==24.2.1
+eventlet==0.36.0
