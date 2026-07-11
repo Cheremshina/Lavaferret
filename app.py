@@ -25,7 +25,7 @@ cache = Cache(app, config={'CACHE_TYPE': 'SimpleCache'})
 compress = Compress(app)
 
 # SocketIO (используем evelent)
-# socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
 
 # Фильтр для шаблонов
 @app.template_filter('dirname')
@@ -59,8 +59,8 @@ with app.app_context():
     db.create_all()
 
 # Запуск фонового обновления статусов (запускаем после создания таблиц)
-# updater = StatusUpdater(app, interval=30)
-# updater.start()
+updater = StatusUpdater(app, interval=30)
+updater.start()
 
 with app.app_context():
     db.create_all()
@@ -111,28 +111,29 @@ def index():
     co_servers = Server.query.join(server_access).filter(server_access.c.user_id == current_user.id).all()
     servers = list(set(own_servers + co_servers))
 
-    # Обновляем статусы (без статистики, чтобы не нагружать)
+    # Обновляем статусы и собираем статистику
+    stats_list = []
     for server in servers:
         try:
-            client = ssh_connect(
-                host=server.ssh_host,
-                port=server.ssh_port,
-                user=server.ssh_user,
-                password=server.get_password()
-            )
+            client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
             status = get_status(client, server.name)
             if server.status != status:
                 server.status = status
+            # Получаем статистику
+            stats = get_system_stats(client)
+            stats_list.append(stats)
             client.close()
         except Exception:
             server.status = 'offline'
+            stats_list.append({'cpu_percent': 0, 'ram_total_mb': 0, 'ram_used_mb': 0, 'ram_percent': 0})
     db.session.commit()
 
-    return render_template('index.html', servers=servers)
+    server_stats = zip(servers, stats_list)
+    return render_template('index.html', server_stats=server_stats)
 
 @app.route('/add', methods=['GET', 'POST'])
 @login_required
-def add_server(server):
+def add_server():
     if request.method == 'POST':
         name = request.form['name']
         host = request.form['host']
@@ -149,10 +150,10 @@ def add_server(server):
 
         try:
             client = client = ssh_connect(
-                    host=server.ssh_host,
-                    port=server.ssh_port,
-                    user=server.ssh_user,
-                    password=server.get_password()
+                    host=host,
+                    port=port,
+                    user=user,
+                    password=password
                 )
             deploy_minecraft_server(client, name, server_type, version, password)
             client.close()
@@ -1043,4 +1044,4 @@ def console(server_id):
 
 # ---------- Запуск ----------
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    socketio.run(app, host='0.0.0.0', port=5000)

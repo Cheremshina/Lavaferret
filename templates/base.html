@@ -26,11 +26,12 @@
                     <a class="nav-link {% if request.endpoint == 'mods' %}active{% endif %}" href="{{ url_for('mods', server_id=server.id) }}">📦 Моды</a>
                     <a class="nav-link {% if request.endpoint == 'backups' %}active{% endif %}" href="{{ url_for('backups', server_id=server.id) }}">💾 Бэкапы</a>
                     <a class="nav-link {% if request.endpoint == 'ports' %}active{% endif %}" href="{{ url_for('ports', server_id=server.id) }}">🔌 Порты</a>
-                    <a class="nav-link {% if request.endpoint == 'domain' %}active{% endif %}" href="{{ url_for('domain', server_id=server.id) }}">🌐 Домен</a>
+<!--                    <a class="nav-link {% if request.endpoint == 'domain' %}active{% endif %}" href="{{ url_for('domain', server_id=server.id) }}">🌐 Домен</a>-->
                     <a class="nav-link {% if request.endpoint == 'startup' %}active{% endif %}" href="{{ url_for('startup', server_id=server.id) }}">🚀 Строка запуска</a>
                     <a class="nav-link {% if request.endpoint == 'settings' %}active{% endif %}" href="{{ url_for('settings', server_id=server.id) }}">⚙️ Настройки</a>
                     <a class="nav-link {% if request.endpoint == 'coowners' %}active{% endif %}" href="{{ url_for('coowners', server_id=server.id) }}">👥 Совладельцы</a>
                 {% endif %}
+            <a class="nav-link" href="{{ url_for('add_server') }}">Добавить сервер</a>
             <a class="nav-link" href="{{ url_for('logout') }}">🚪 Выйти</a>
             {% else %}
                 <a class="nav-link" href="{{ url_for('login') }}">🔑 Вход</a>
@@ -67,5 +68,41 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+    // Функция обновления статистики для всех серверов на главной
+    function updateAllStats() {
+        const cards = document.querySelectorAll('.server-card');
+        cards.forEach(card => {
+            const link = card.querySelector('a[href*="/server/"]');
+            if (!link) return;
+            const serverId = link.getAttribute('href').split('/')[2];
+            fetch(`/api/server/${serverId}/stats`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.error) return;
+                    // Обновляем CPU
+                    const cpuSpan = document.getElementById(`cpu-${serverId}`);
+                    const cpuBar = document.getElementById(`cpu-bar-${serverId}`);
+                    if (cpuSpan) cpuSpan.textContent = (data.cpu_percent || 0).toFixed(1);
+                    if (cpuBar) cpuBar.style.width = Math.min(data.cpu_percent || 0, 100) + '%';
+                    // Обновляем RAM
+                    const ramUsed = document.getElementById(`ram-used-${serverId}`);
+                    const ramTotal = document.getElementById(`ram-total-${serverId}`);
+                    const ramPercent = document.getElementById(`ram-percent-${serverId}`);
+                    const ramBar = document.getElementById(`ram-bar-${serverId}`);
+                    if (ramUsed) ramUsed.textContent = data.ram_used_mb || 0;
+                    if (ramTotal) ramTotal.textContent = data.ram_total_mb || 0;
+                    if (ramPercent) ramPercent.textContent = (data.ram_percent || 0).toFixed(1);
+                    if (ramBar) ramBar.style.width = Math.min(data.ram_percent || 0, 100) + '%';
+                })
+                .catch(() => {});
+        });
+    }
+
+    // Запускаем обновление сразу и каждые 10 секунд
+    updateAllStats();
+    setInterval(updateAllStats, 10000);
+</script>
 </body>
 </html>

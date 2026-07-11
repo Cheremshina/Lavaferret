@@ -493,68 +493,38 @@ java -Xmx1024M -Xms1024M -jar server.jar nogui
     return True
 
 def get_system_stats(client):
-    """
-    Получает статистику системы через SSH:
-    - загрузка CPU (%)
-    - общая память (МБ), используемая память (МБ), процент использования
-    Возвращает словарь.
-    """
-    stats = {}
+    stats = {'cpu_percent': 0.0, 'ram_total_mb': 0, 'ram_used_mb': 0, 'ram_percent': 0.0}
     try:
-        # CPU: берём idle и вычисляем usage = 100 - idle
-        # Используем top -bn1, берём строку с Cpu(s)
-        out, err, code = execute_command(client, "top -bn1 | grep 'Cpu(s)' | awk '{print $2}' | cut -d'%' -f1", timeout=5)
+        # CPU: пробуем разные способы
+        cpu_usage = 0.0
+        # 1. mpstat
+        out, err, code = execute_command(client, "mpstat 1 1 | tail -n1 | awk '{print 100 - $NF}'", timeout=3)
         if code == 0 and out.strip():
-            # В некоторых версиях top выводит "us" (user) - лучше взять idle
-            # Попробуем другой способ: через mpstat, если доступен
-            out2, err2, code2 = execute_command(client, "mpstat 1 1 | tail -n1 | awk '{print 100 - $NF}'", timeout=5)
+            cpu_usage = float(out.strip())
+        else:
+            # 2. /proc/stat
+            out2, err2, code2 = execute_command(client, "cat /proc/stat | grep '^cpu ' | awk '{print ($2+$4)*100/($2+$4+$5)}'", timeout=2)
             if code2 == 0 and out2.strip():
                 cpu_usage = float(out2.strip())
             else:
-                # Запасной вариант: берём idle из top
-                # top -bn1 | grep "Cpu(s)" | awk '{print $8}' - это idle (в некоторых версиях)
-                out_idle, err_idle, code_idle = execute_command(client, "top -bn1 | grep 'Cpu(s)' | awk '{print $8}' | cut -d'%' -f1", timeout=5)
-                if code_idle == 0 and out_idle.strip():
-                    idle = float(out_idle.strip())
-                    cpu_usage = 100 - idle
-                else:
-                    # Ещё вариант: читаем /proc/stat
-                    out_stat, err_stat, code_stat = execute_command(client, "cat /proc/stat | grep '^cpu ' | awk '{print ($2+$4)*100/($2+$4+$5)}'", timeout=5)
-                    if code_stat == 0 and out_stat.strip():
-                        cpu_usage = float(out_stat.strip())
-                    else:
-                        cpu_usage = 0.0
-        else:
-            cpu_usage = 0.0
+                # 3. top (запасной вариант)
+                out3, err3, code3 = execute_command(client, "top -bn1 | grep 'Cpu(s)' | awk '{print $2}' | cut -d'%' -f1", timeout=2)
+                if code3 == 0 and out3.strip():
+                    cpu_usage = float(out3.strip())
         stats['cpu_percent'] = round(cpu_usage, 1)
 
-        # RAM: используем free -m
-        out_ram, err_ram, code_ram = execute_command(client, "free -m | grep Mem | awk '{print $2, $3, $7}'", timeout=5)
+        # RAM: free -m
+        out_ram, err_ram, code_ram = execute_command(client, "free -m | grep Mem | awk '{print $2, $3}'", timeout=2)
         if code_ram == 0 and out_ram.strip():
             parts = out_ram.strip().split()
-            if len(parts) >= 3:
+            if len(parts) >= 2:
                 total_mb = int(parts[0])
                 used_mb = int(parts[1])
-                # parts[2] - available (может быть)
                 stats['ram_total_mb'] = total_mb
                 stats['ram_used_mb'] = used_mb
                 stats['ram_percent'] = round((used_mb / total_mb) * 100, 1) if total_mb > 0 else 0.0
-            else:
-                stats['ram_total_mb'] = 0
-                stats['ram_used_mb'] = 0
-                stats['ram_percent'] = 0.0
-        else:
-            stats['ram_total_mb'] = 0
-            stats['ram_used_mb'] = 0
-            stats['ram_percent'] = 0.0
     except Exception as e:
-        # В случае ошибки возвращаем нулевые значения
-        stats = {
-            'cpu_percent': 0.0,
-            'ram_total_mb': 0,
-            'ram_used_mb': 0,
-            'ram_percent': 0.0
-        }
+        print(f"Error in get_system_stats: {e}")
     return stats
 
 # ----- Управление файлами и конфигом -----

@@ -2,7 +2,7 @@
 {% block content %}
 <h1>Ваши серверы</h1>
 <div class="row">
-    {% for server in servers %}
+    {% for server, stats in server_stats %}
     <div class="col-md-4">
         <div class="card server-card">
             <div class="card-body">
@@ -15,7 +15,35 @@
                         {{ server.status }}
                     </span>
                 </p>
-                <a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-primary btn-sm">Управление</a>
+                <!-- Блок статистики (виден только для запущенных серверов) -->
+                {% if server.status == 'running' %}
+                <div class="mt-2">
+                    <div>
+                        <span>CPU: <span id="cpu-{{ server.id }}">{{ stats.cpu_percent|default(0) }}%</span></span>
+                        <div class="progress" style="height: 6px;">
+                            <div id="cpu-bar-{{ server.id }}" class="progress-bar bg-info" role="progressbar"
+                                 style="width: {{ stats.cpu_percent|default(0) }}%;"
+                                 aria-valuenow="{{ stats.cpu_percent|default(0) }}" aria-valuemin="0" aria-valuemax="100"></div>
+                        </div>
+                    </div>
+                    <div class="mt-1">
+                        <span>RAM: <span id="ram-used-{{ server.id }}">{{ stats.ram_used_mb|default(0) }}</span> МБ /
+                        <span id="ram-total-{{ server.id }}">{{ stats.ram_total_mb|default(0) }}</span> МБ
+                        (<span id="ram-percent-{{ server.id }}">{{ stats.ram_percent|default(0) }}</span>%)</span>
+                        <div class="progress" style="height: 6px;">
+                            <div id="ram-bar-{{ server.id }}" class="progress-bar bg-success" role="progressbar"
+                                 style="width: {{ stats.ram_percent|default(0) }}%;"
+                                 aria-valuenow="{{ stats.ram_percent|default(0) }}" aria-valuemin="0" aria-valuemax="100"></div>
+                        </div>
+                    </div>
+                </div>
+                {% else %}
+                <p class="text-muted mt-2">Статистика недоступна (сервер остановлен)</p>
+                {% endif %}
+                <div class="mt-2">
+                    <a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-primary btn-sm">Управление</a>
+                    <a href="{{ url_for('console', server_id=server.id) }}" class="btn btn-info btn-sm">Консоль</a>
+                </div>
             </div>
         </div>
     </div>

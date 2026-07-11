@@ -8,8 +8,28 @@
         <p><strong>Версия:</strong> {{ server.mc_version }}</p>
         <p><strong>Хост:</strong> {{ server.ssh_host }}:{{ server.ssh_port }}</p>
         <p><strong>Пользователь:</strong> {{ server.ssh_user }}</p>
-        <p><strong>Статус:</strong> <span class="badge bg-{% if server.status == 'running' %}success{% elif server.status == 'stopped' %}warning{% else %}secondary{% endif %}">{{ server.status }}</span></p>
-        <div>
+        <p><strong>Статус:</strong> <span class="badge bg-{% if server.status == 'running' %}success{% elif server.status == 'stopped' %}warning{% else %}secondary{% endif %}" id="server-status-badge">{{ server.status }}</span></p>
+
+        <!-- Блок системной статистики (обновляется каждые 5 секунд) -->
+        <div id="stats-container" style="margin-top: 10px; display: {% if server.status == 'running' %}block{% else %}none{% endif %};">
+            <hr>
+            <h6>Системная нагрузка</h6>
+            <div class="mb-2">
+                <span>CPU: <span id="cpu-percent">0.0</span>%</span>
+                <div class="progress" style="height: 8px;">
+                    <div id="cpu-bar" class="progress-bar bg-info" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                </div>
+            </div>
+            <div>
+                <span>RAM: <span id="ram-used">0</span> МБ / <span id="ram-total">0</span> МБ (<span id="ram-percent">0.0</span>%)</span>
+                <div class="progress" style="height: 8px;">
+                    <div id="ram-bar" class="progress-bar bg-success" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                </div>
+            </div>
+            <div id="stats-error" class="text-danger mt-1" style="display:none;"></div>
+        </div>
+
+        <div class="mt-3">
             <a href="{{ url_for('start_server_route', server_id=server.id) }}" class="btn btn-success">▶ Запустить</a>
             <a href="{{ url_for('stop_server_route', server_id=server.id) }}" class="btn btn-warning">⏹ Остановить</a>
             <a href="{{ url_for('restart_server_route', server_id=server.id) }}" class="btn btn-info">🔄 Перезапустить</a>
@@ -21,7 +41,7 @@
     </div>
 </div>
 
-<!-- Блок: Консоль + Логи -->
+<!-- Блок: Консоль + Логи (объединены) -->
 <div class="card">
     <div class="card-header">🖥️ Консоль и логи</div>
     <div class="card-body">
@@ -38,9 +58,53 @@
 <a href="{{ url_for('index') }}" class="btn btn-secondary mt-3">← Назад к списку</a>
 
 <script>
+    // serverId объявляем один раз
     const serverId = {{ server.id }};
 
-    // Получение логов
+    // ----- Статистика (CPU/RAM) -----
+    function fetchStats() {
+        fetch(`/api/server/${serverId}/stats`)
+            .then(res => res.json())
+            .then(data => {
+                const container = document.getElementById('stats-container');
+                const errorDiv = document.getElementById('stats-error');
+                if (data.error) {
+                    errorDiv.textContent = 'Ошибка получения статистики: ' + data.error;
+                    errorDiv.style.display = 'block';
+                    updateStatsUI(0, 0, 0, 0);
+                    return;
+                }
+                errorDiv.style.display = 'none';
+                updateStatsUI(data.cpu_percent || 0, data.ram_total_mb || 0, data.ram_used_mb || 0, data.ram_percent || 0);
+                // Показываем или скрываем блок в зависимости от статуса
+                const statusBadge = document.getElementById('server-status-badge');
+                if (statusBadge && statusBadge.textContent.trim() === 'running') {
+                    container.style.display = 'block';
+                } else {
+                    container.style.display = 'none';
+                }
+            })
+            .catch(err => {
+                document.getElementById('stats-error').textContent = 'Ошибка соединения: ' + err;
+                document.getElementById('stats-error').style.display = 'block';
+                updateStatsUI(0, 0, 0, 0);
+            });
+    }
+
+    function updateStatsUI(cpu, ramTotal, ramUsed, ramPercent) {
+        document.getElementById('cpu-percent').textContent = cpu.toFixed(1);
+        document.getElementById('cpu-bar').style.width = Math.min(cpu, 100) + '%';
+        document.getElementById('cpu-bar').setAttribute('aria-valuenow', Math.min(cpu, 100));
+        document.getElementById('ram-total').textContent = ramTotal;
+        document.getElementById('ram-used').textContent = ramUsed;
+        document.getElementById('ram-percent').textContent = ramPercent.toFixed(1);
+        const ramBar = document.getElementById('ram-bar');
+        const ramPercentClamped = Math.min(ramPercent, 100);
+        ramBar.style.width = ramPercentClamped + '%';
+        ramBar.setAttribute('aria-valuenow', ramPercentClamped);
+    }
+
+    // ----- Логи (вывод в консоль) -----
     function fetchLogs() {
         fetch(`/server/${serverId}/api/logs`)
             .then(res => res.json())
@@ -79,21 +143,20 @@
         });
     });
 
-    // Отправка по Enter
     document.getElementById('command-input').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') {
             document.getElementById('send-command').click();
         }
     });
 
-    // Очистка экрана
     document.getElementById('clear-console').addEventListener('click', function() {
         document.getElementById('console-output').textContent = '';
     });
 
-    // Первая загрузка логов
+    // Запускаем обновления
+    fetchStats();
+    setInterval(fetchStats, 5000);
     fetchLogs();
-    // Автообновление каждые 3 секунды
     setInterval(fetchLogs, 3000);
 </script>
 {% endblock %}
