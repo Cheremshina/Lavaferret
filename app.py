@@ -4,44 +4,38 @@ from ssh_utils import *
 from config import Config
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
-from flask_socketio import SocketIO, emit, join_room
+from flask_socketio import SocketIO
 from flask_caching import Cache
 from flask_compress import Compress
 import json
-import threading
-import time
-from status_updater import StatusUpdater
 import requests
-import eventlet
 from sqlalchemy import text
 
+# -----------------------------------------------
+# Список версий для разных типов ядер
+# (оставлен как в вашем коде)
+# -----------------------------------------------
 versions = {
-
     'vanilla': ['26.2', '26.1.2', '26.1.1', '26.1', '1.21.11', '1.21.10', '1.21.9', '1.21.8', '1.21.7', '1.21.6',
                 '1.21.5', '1.21.4', '1.21.3', '1.21.2', '1.21.1', '1.21', '1.20.6', '1.20.5', '1.20.4', '1.20.3',
                 '1.20.2', '1.20.1', '1.20', '1.19.4', '1.19.3', '1.19.2', '1.19.1', '1.19', '1.18.2', '1.18.1', '1.18',
                 '1.17.1', '1.17', '1.16.5', '1.16.4', '1.16.3', '1.16.2', '1.16.1', '1.16', '1.15.2', '1.15.1', '1.15',
                 '1.14.4', '1.14.3', '1.14.2', '1.14.1', '1.14', '1.13.2', '1.13.1', '1.13', '1.12.2', '1.12.1', '1.12',
                 '1.11.2', '1.11.1', '1.11', '1.10.2', '1.10.1', '1.10', '1.9.4', '1.9.3', '1.9.2', '1.9.1',
-                '1.9', '1.8.9', '1.8.8', '1.8.7', '1.8.6', '1.8.5', '1.8.4', '1.8.3', '1.8.2', '1.8.1', '1.8',
-                '1.7.10'
-                ],
+                '1.9', '1.8.9', '1.8.8', '1.8.7', '1.8.6', '1.8.5', '1.8.4', '1.8.3', '1.8.2', '1.8.1', '1.8', '1.7.10'],
 
-    'spigot': [
-            '26.1.2', '26.1.1', '26.1', '1.21.11', '1.21.10', '1.21.8', '1.21.5', '1.21.4','1.21.3', '1.21.1', '1.20.6', '1.20.4',
-            '1.20.2', '1.20.1', '1.19.4', '1.19.3', '1.19.2', '1.19.1', '1.19', '1.18.2', '1.18.1', '1.18', '1.16.5',
-            '1.16.4', '1.16.3', '1.16.2', '1.16.1', '1.15.2', '1.15.1', '1.15', '1.14.4', '1.14.3', '1.14.2', '1.14.1',
-            '1.14', '1.13.2', '1.13.1', '1.13', '1.12.2', '1.12.1', '1.12', '1.11.2', '1.11', '1.10.2', '1.9.4', '1.9.2',
-            '1.9', '1.8.8', '1.8.3', '1.8'
-        ],
+    'spigot': ['26.1.2', '26.1.1', '26.1', '1.21.11', '1.21.10', '1.21.8', '1.21.5', '1.21.4','1.21.3', '1.21.1', '1.20.6', '1.20.4',
+               '1.20.2', '1.20.1', '1.19.4', '1.19.3', '1.19.2', '1.19.1', '1.19', '1.18.2', '1.18.1', '1.18', '1.16.5',
+               '1.16.4', '1.16.3', '1.16.2', '1.16.1', '1.15.2', '1.15.1', '1.15', '1.14.4', '1.14.3', '1.14.2', '1.14.1',
+               '1.14', '1.13.2', '1.13.1', '1.13', '1.12.2', '1.12.1', '1.12', '1.11.2', '1.11', '1.10.2', '1.9.4', '1.9.2',
+               '1.9', '1.8.8', '1.8.3', '1.8'],
 
     'paper': ['26.2', '26.1.2', '26.1.1', '26.1', '1.21.11', '1.21.10', '1.21.9', '1.21.8', '1.21.7', '1.21.6',
-               '1.21.5', '1.21.4', '1.21.3', '1.21.1', '1.21', '1.20.6', '1.20.5', '1.20.4',  '1.20.2',
-               '1.20.1', '1.20', '1.19.4', '1.19.3', '1.19.2', '1.19.1', '1.19', '1.18.2', '1.18.1', '1.18',
-               '1.17.1', '1.17', '1.16.5', '1.16.4', '1.16.3', '1.16.2', '1.16.1', '1.15.2', '1.15.1', '1.15',
-               '1.14.4', '1.14.3', '1.14.2', '1.14.1', '1.14', '1.13.2', '1.13.1', '1.13', '1.12.2', '1.12.1',
-               '1.12','1.11.2','1.10.2','1.9.4','1.8.8','1.7.10'
-              ],
+              '1.21.5', '1.21.4', '1.21.3', '1.21.1', '1.21', '1.20.6', '1.20.5', '1.20.4', '1.20.2',
+              '1.20.1', '1.20', '1.19.4', '1.19.3', '1.19.2', '1.19.1', '1.19', '1.18.2', '1.18.1', '1.18',
+              '1.17.1', '1.17', '1.16.5', '1.16.4', '1.16.3', '1.16.2', '1.16.1', '1.15.2', '1.15.1', '1.15',
+              '1.14.4', '1.14.3', '1.14.2', '1.14.1', '1.14', '1.13.2', '1.13.1', '1.13', '1.12.2', '1.12.1',
+              '1.12','1.11.2','1.10.2','1.9.4','1.8.8','1.7.10'],
 
     'velocity':['Lastest'],
 
@@ -51,24 +45,23 @@ versions = {
 
     'foila':['26.1.2', '1.21.11', '1.21.8', '1.21.6', '1.21.5', '1.21.4', '1.20.6', '1.20.4', '1.20.2', '1.20.1', '1.19.4'],
 
-    'purpur':[
-            '26.2', '26.1.2', '1.21.11', '1.21.10', '1.21.9', '1.21.8', '1.21.7', '1.21.6', '1.21.5', '1.21.4', '1.21.3',
-            '1.21.1', '1.21', '1.20.6', '1.20.4', '1.20.2', '1.20.1', '1.20', '1.19.4', '1.19.3', '1.19.2', '1.19.1',
-            '1.19', '1.18.2', '1.18.1', '1.18', '1.17.1', '1.17', '1.16.5', '1.16.4', '1.16.3', '1.16.2', '1.16.1',
-            '1.15.2', '1.15.1', '1.15', '1.14.4', '1.14.3', '1.14.2', '1.14.1']
-
+    'purpur':['26.2', '26.1.2', '1.21.11', '1.21.10', '1.21.9', '1.21.8', '1.21.7', '1.21.6', '1.21.5', '1.21.4', '1.21.3',
+              '1.21.1', '1.21', '1.20.6', '1.20.4', '1.20.2', '1.20.1', '1.20', '1.19.4', '1.19.3', '1.19.2', '1.19.1',
+              '1.19', '1.18.2', '1.18.1', '1.18', '1.17.1', '1.17', '1.16.5', '1.16.4', '1.16.3', '1.16.2', '1.16.1',
+              '1.15.2', '1.15.1', '1.15', '1.14.4', '1.14.3', '1.14.2', '1.14.1']
 }
 
+# ------------------------------------------------------------
+# Инициализация приложения
+# ------------------------------------------------------------
 app = Flask(__name__)
 app.config.from_object(Config)
 
-# Кэширование
+# Кэш и сжатие
 cache = Cache(app, config={'CACHE_TYPE': 'SimpleCache'})
-
-# Сжатие ответов
 compress = Compress(app)
 
-# SocketIO (используем evelent)
+# SocketIO (без WebSocket для лёгкости, можно оставить для будущего)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
 
 # Фильтр для шаблонов
@@ -78,7 +71,7 @@ def dirname_filter(path):
         return ''
     return '/'.join(path.split('/')[:-1])
 
-# Инициализация БД
+# БД
 db.init_app(app)
 
 # Flask-Login
@@ -87,9 +80,9 @@ login_manager.init_app(app)
 login_manager.login_view = 'login'
 
 def get_server_or_404(server_id):
-    server = db.session.get(Server, server_id)  # заменили Query.get
+    server = db.session.get(Server, server_id)
     if not server:
-        abort(404)   # не return "Not found"
+        abort(404)
     if server.user_id == current_user.id or current_user in server.co_owners:
         return server
     abort(403)
@@ -98,20 +91,20 @@ def get_server_or_404(server_id):
 def load_user(user_id):
     return db.session.get(User, int(user_id))
 
-# Создание таблиц
-with app.app_context():
-    db.create_all()
-
-# Запуск фонового обновления статусов (запускаем после создания таблиц)
-updater = StatusUpdater(app, interval=30)
-updater.start()
-
+# Создание таблиц и настройка БД
 with app.app_context():
     db.create_all()
     db.session.execute(text("PRAGMA journal_mode=WAL"))
     db.session.commit()
 
-# ---------- Роуты авторизации ----------
+# Фоновый апдейтер (отключён – можно включить при необходимости)
+from status_updater import StatusUpdater
+updater = StatusUpdater(app, interval=60)
+updater.start()
+
+# ------------------------------------------------------------
+# Роуты авторизации
+# ------------------------------------------------------------
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
@@ -146,8 +139,9 @@ def logout():
     logout_user()
     return redirect(url_for('login'))
 
-# ---------- Основные роуты ----------
-
+# ------------------------------------------------------------
+# Основные страницы
+# ------------------------------------------------------------
 @app.route('/')
 @login_required
 def index():
@@ -155,7 +149,6 @@ def index():
     co_servers = Server.query.join(server_access).filter(server_access.c.user_id == current_user.id).all()
     servers = list(set(own_servers + co_servers))
 
-    # Обновляем статусы и собираем статистику
     stats_list = []
     for server in servers:
         try:
@@ -163,7 +156,6 @@ def index():
             status = get_status(client, server.name)
             if server.status != status:
                 server.status = status
-            # Получаем статистику
             stats = get_system_stats(client)
             stats_list.append(stats)
             client.close()
@@ -193,12 +185,7 @@ def add_server():
             return redirect(url_for('add_server'))
 
         try:
-            client = client = ssh_connect(
-                    host=host,
-                    port=port,
-                    user=user,
-                    password=password
-                )
+            client = ssh_connect(host, port, user, password)
             deploy_minecraft_server(client, name, server_type, version, password)
             client.close()
 
@@ -215,14 +202,12 @@ def add_server():
             server.set_password(password)
             db.session.add(server)
             db.session.commit()
-            # Инвалидируем кэш главной страницы
             cache.delete('index')
             flash('Server deployed successfully!')
             return redirect(url_for('index'))
         except Exception as e:
             flash(f'Error: {str(e)}')
             return redirect(url_for('add_server'))
-
     return render_template('add_server.html', versions=versions)
 
 @app.route('/server/<int:server_id>')
@@ -231,12 +216,7 @@ def server_detail(server_id):
     server = get_server_or_404(server_id)
     logs = ''
     try:
-        client = ssh_connect(
-            host=server.ssh_host,
-            port=server.ssh_port,
-            user=server.ssh_user,
-            password=server.get_password()
-        )
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
         logs = get_logs(client, server.name)
         status = get_status(client, server.name)
         server.status = status
@@ -251,51 +231,46 @@ def server_detail(server_id):
 @app.route('/api/server/<int:server_id>/stats')
 @login_required
 def api_server_stats(server_id):
-    server = get_server_or_404(server_id)  # <-- эта строка обязательна
+    server = get_server_or_404(server_id)
     try:
         client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
         stats = get_system_stats(client)
         client.close()
         return jsonify(stats)
     except Exception as e:
-        return jsonify({
-            'cpu_percent': 0.0,
-            'ram_total_mb': 0,
-            'ram_used_mb': 0,
-            'ram_percent': 0.0,
-            'error': str(e)
-        })
+        return jsonify({'cpu_percent': 0.0, 'ram_total_mb': 0, 'ram_used_mb': 0, 'ram_percent': 0.0, 'error': str(e)})
 
-# Кэшированная функция для получения логов
 @cache.memoize(timeout=5)
 def get_logs_cached(server_id, server):
-    client = ssh_connect(
-        host=server.ssh_host,
-        port=server.ssh_port,
-        user=server.ssh_user,
-        password=server.get_password()
-    )
+    client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
     logs = get_logs(client, server.name)
     client.close()
     return logs
 
+@app.route('/server/<int:server_id>/api/logs')
+@login_required
+def api_get_logs(server_id):
+    try:
+        server = get_server_or_404(server_id)
+        logs = get_logs_cached(server_id, server)
+        return jsonify({'logs': logs})
+    except Exception as e:
+        return jsonify({'logs': f'Error: {str(e)}'}), 500
+
+# ------------------------------------------------------------
+# Управление сервером (start, stop, restart, delete)
+# ------------------------------------------------------------
 @app.route('/server/<int:server_id>/start')
 @login_required
 def start_server_route(server_id):
     server = get_server_or_404(server_id)
     try:
         password = server.get_password()
-        client = ssh_connect(
-            host=server.ssh_host,
-            port=server.ssh_port,
-            user=server.ssh_user,
-            password=server.get_password()
-        )
-        start_server(client, server.name, password)
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, password)
+        start_server_via_nohup(client, server.name, password, server.java_path if hasattr(server, 'java_path') else "java")
         client.close()
         server.status = 'running'
         db.session.commit()
-        # Инвалидируем кэш главной
         cache.delete('index')
         flash('Server started')
     except Exception as e:
@@ -307,12 +282,7 @@ def start_server_route(server_id):
 def stop_server_route(server_id):
     server = get_server_or_404(server_id)
     try:
-        client = ssh_connect(
-            host=server.ssh_host,
-            port=server.ssh_port,
-            user=server.ssh_user,
-            password=server.get_password()
-        )
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
         stop_server(client, server.name)
         client.close()
         server.status = 'stopped'
@@ -329,13 +299,8 @@ def restart_server_route(server_id):
     server = get_server_or_404(server_id)
     try:
         password = server.get_password()
-        client = ssh_connect(
-            host=server.ssh_host,
-            port=server.ssh_port,
-            user=server.ssh_user,
-            password=server.get_password()
-        )
-        restart_server(client, server.name, password)
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, password)
+        restart_server(client, server.name, password, server.java_path if hasattr(server, 'java_path') else "java")
         client.close()
         server.status = 'running'
         db.session.commit()
@@ -350,12 +315,7 @@ def restart_server_route(server_id):
 def delete_server_route(server_id):
     server = get_server_or_404(server_id)
     try:
-        client = ssh_connect(
-            host=server.ssh_host,
-            port=server.ssh_port,
-            user=server.ssh_user,
-            password=server.get_password()
-        )
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
         delete_server(client, server.name)
         client.close()
         db.session.delete(server)
@@ -366,7 +326,9 @@ def delete_server_route(server_id):
         flash(f'Error: {e}')
     return redirect(url_for('index'))
 
-# ---------- API для консоли (AJAX) ----------
+# ------------------------------------------------------------
+# API для консоли (AJAX)
+# ------------------------------------------------------------
 @app.route('/server/<int:server_id>/api/command', methods=['POST'])
 @login_required
 def api_send_command(server_id):
@@ -375,181 +337,47 @@ def api_send_command(server_id):
     if not command:
         return jsonify({'status': 'error', 'message': 'No command'}), 400
     try:
-        client = ssh_connect(
-            host=server.ssh_host,
-            port=server.ssh_port,
-            user=server.ssh_user,
-            password=server.get_password()
-        )
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
         send_command(client, server.name, command)
         client.close()
         return jsonify({'status': 'ok'})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
-@app.route('/server/<int:server_id>/api/logs')
+# ------------------------------------------------------------
+# Страница консоли
+# ------------------------------------------------------------
+@app.route('/server/<int:server_id>/console')
 @login_required
-def api_get_logs(server_id):
-    try:
-        server = get_server_or_404(server_id)
-        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password)
-        logs = get_logs(client, server.name, lines=50)
-        client.close()
-        return jsonify({'logs': logs})
-    except Exception as e:
-        import traceback
-        traceback.print_exc()  # печатаем стек в консоль
-        return jsonify({'logs': f'Error: {str(e)}'}), 500
+def console(server_id):
+    server = get_server_or_404(server_id)
+    return render_template('console.html', server=server, active_page='console')
 
-# ---------- Страница консоли (WebSocket) ----------
-# @app.route('/server/<int:server_id>/console')
-# @login_required
-# def console(server_id):
-#     server = get_server_or_404(server_id)
-#     return render_template('console.html', server=server, active_page='console')
+# ------------------------------------------------------------
+# SSH настройки
+# ------------------------------------------------------------
+@app.route('/server/<int:server_id>/ssh-settings', methods=['GET', 'POST'])
+@login_required
+def ssh_settings(server_id):
+    server = get_server_or_404(server_id)
+    if request.method == 'POST':
+        new_host = request.form.get('ssh_host')
+        new_port = request.form.get('ssh_port')
+        new_user = request.form.get('ssh_user')
+        if new_host:
+            server.ssh_host = new_host
+        if new_port:
+            server.ssh_port = int(new_port)
+        if new_user:
+            server.ssh_user = new_user
+        db.session.commit()
+        flash('SSH настройки обновлены')
+        return redirect(url_for('ssh_settings', server_id=server.id))
+    return render_template('ssh_settings.html', server=server, active_page='ssh_settings')
 
-# ---------- WebSocket обработчики (оптимизированы) ----------
-# tail_threads = {}
-# ssh_clients = {}
-# room_clients = {}  # количество клиентов в комнате
-#
-# def tail_logs_thread(server_id, server, client):
-#     log_path = f"/home/{server.ssh_user}/minecraft_servers/{server.name}/logs/latest.log"
-#     last_position = 0
-#     batch = []
-#     last_send_time = time.time()
-#     while True:
-#         try:
-#             # Проверяем, есть ли активные клиенты в комнате
-#             if server_id not in room_clients or room_clients[server_id] == 0:
-#                 break
-#             if not client.get_transport() or not client.get_transport().is_active():
-#                 break
-#             cmd = f"tail -n +{last_position+1} {log_path} 2>/dev/null"
-#             out, err, code = execute_command(client, cmd, timeout=5)
-#             if out:
-#                 lines = out.splitlines()
-#                 batch.extend(lines)
-#                 last_position += len(lines)
-#             if time.time() - last_send_time > 1 or len(batch) >= 10:
-#                 if batch:
-#                     socketio.emit('log_lines', {'lines': batch}, namespace='/console', room=str(server_id))
-#                     batch = []
-#                     last_send_time = time.time()
-#             time.sleep(0.5)
-#         except Exception as e:
-#             socketio.emit('error', {'message': str(e)}, namespace='/console', room=str(server_id))
-#             break
-#     # Закрываем клиент при выходе
-#     try:
-#         client.close()
-#     except:
-#         pass
-#     # Удаляем записи
-#     if server_id in tail_threads:
-#         del tail_threads[server_id]
-#     if server_id in ssh_clients:
-#         del ssh_clients[server_id]
-#     if server_id in room_clients:
-#         del room_clients[server_id]
-#
-# @socketio.on('connect', namespace='/console')
-# def handle_console_connect():
-#     print('Client connected to console namespace')
-#
-# @socketio.on('disconnect', namespace='/console')
-# def handle_console_disconnect():
-#     sid = request.sid
-#     if sid in client_rooms:
-#         server_id = client_rooms[sid]
-#         if server_id in room_clients:
-#             room_clients[server_id] -= 1
-#             if room_clients[server_id] == 0:
-#                 del room_clients[server_id]
-#         del client_rooms[sid]
-#
-# @socketio.on('join', namespace='/console')
-# def handle_console_join(data):
-#     server_id = data.get('server_id')
-#     if not server_id:
-#         emit('error', {'message': 'No server_id provided'}, namespace='/console')
-#         return
-#     server = Server.query.get(server_id)
-#     if not server:
-#         emit('error', {'message': 'Server not found'}, namespace='/console')
-#         return
-#     if server.user_id != current_user.id and current_user not in server.co_owners:
-#         emit('error', {'message': 'Access denied'}, namespace='/console')
-#         return
-#     # Запоминаем комнату для клиента
-#     sid = request.sid
-#     client_rooms[sid] = server_id
-#
-#     join_room(str(server_id))
-#     emit('connected', {'message': f'Connected to {server.name}'}, namespace='/console')
-#
-#     if server_id not in room_clients:
-#         room_clients[server_id] = 0
-#     room_clients[server_id] += 1
-#
-#     if server_id not in tail_threads:
-#         try:
-#             client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
-#             ssh_clients[server_id] = client
-#             thread = threading.Thread(target=tail_logs_thread, args=(server_id, server, client))
-#             thread.daemon = True
-#             thread.start()
-#             tail_threads[server_id] = thread
-#         except Exception as e:
-#             emit('error', {'message': str(e)}, namespace='/console')
-#             room_clients[server_id] -= 1
-#             if room_clients[server_id] == 0:
-#                 del room_clients[server_id]
-#             if server_id in client_rooms:
-#                 del client_rooms[server_id]
-#
-# @socketio.on('send_command', namespace='/console')
-# def handle_console_send_command(data):
-#     server_id = data.get('server_id')
-#     command = data.get('command')
-#     if not server_id or not command:
-#         emit('error', {'message': 'Invalid data'}, namespace='/console')
-#         return
-#     server = Server.query.get(server_id)
-#     if not server:
-#         emit('error', {'message': 'Server not found'}, namespace='/console')
-#         return
-#     if server.user_id != current_user.id and current_user not in server.co_owners:
-#         emit('error', {'message': 'Access denied'}, namespace='/console')
-#         return
-#     client = ssh_clients.get(server_id)
-#     if not client:
-#         try:
-#             client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
-#             ssh_clients[server_id] = client
-#         except Exception as e:
-#             emit('error', {'message': str(e)}, namespace='/console')
-#             return
-#     try:
-#         send_command(client, server.name, command)
-#         emit('command_sent', {'command': command}, namespace='/console')
-#     except Exception as e:
-#         emit('error', {'message': str(e)}, namespace='/console')
-
-# ---------- Разделы панели (Players, Files, Config, Plugins, Mods, Backups, Ports, Domain, Startup, Settings, Coowners, Change-core) ----------
-
-@cache.memoize(timeout=5)
-def get_logs_cached(server_id, server):
-    client = ssh_connect(
-        host=server.ssh_host,
-        port=server.ssh_port,
-        user=server.ssh_user,
-        password=server.get_password()
-    )
-    logs = get_logs(client, server.name)
-    client.close()
-    return logs
-
+# ------------------------------------------------------------
+# Разделы панели (игроки, файлы, конфиг, плагины, моды, бэкапы, порты, домен, строка запуска, настройки, совладельцы, смена ядра)
+# ------------------------------------------------------------
 @app.route('/server/<int:server_id>/players')
 @login_required
 def players(server_id):
@@ -558,12 +386,7 @@ def players(server_id):
     whitelist = []
     bans = []
     try:
-        client = ssh_connect(
-            host=server.ssh_host,
-            port=server.ssh_port,
-            user=server.ssh_user,
-            password=server.get_password()
-        )
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
         for fname, lst in [('ops.json', ops), ('whitelist.json', whitelist), ('banned-players.json', bans)]:
             content = get_file_content(client, server.name, fname)
             if content:
@@ -577,6 +400,55 @@ def players(server_id):
         flash(f"Ошибка чтения списков: {e}")
     return render_template('players.html', server=server, ops=ops, whitelist=whitelist, bans=bans, active_page='players')
 
+@app.route('/server/<int:server_id>/files/edit', methods=['GET', 'POST'])
+@login_required
+def edit_file(server_id):
+    server = get_server_or_404(server_id)
+    file_path = request.args.get('path', '')
+    if not file_path:
+        abort(400)
+
+    if request.method == 'POST':
+        content = request.form.get('content')
+        if content is None:
+            abort(400)
+        try:
+            client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
+            write_file_content(client, server.name, file_path, content)
+            client.close()
+            flash('Файл сохранён')
+        except Exception as e:
+            flash(f'Ошибка сохранения: {e}')
+        return redirect(url_for('files', server_id=server.id, path='/'.join(file_path.split('/')[:-1]) if '/' in file_path else ''))
+
+    # GET: читаем содержимое файла
+    try:
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
+        content = get_file_content(client, server.name, file_path)
+        client.close()
+        if content is None:
+            flash('Файл не найден')
+            return redirect(url_for('files', server_id=server.id))
+        return render_template('edit_file.html', server=server, file_path=file_path, content=content)
+    except Exception as e:
+        flash(f'Ошибка чтения: {e}')
+        return redirect(url_for('files', server_id=server.id))
+
+@app.route('/server/<int:server_id>/files/delete', methods=['POST'])
+@login_required
+def delete_file(server_id):
+    server = get_server_or_404(server_id)
+    file_path = request.args.get('file')
+    if not file_path:
+        abort(400)
+    try:
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
+        delete_file_or_directory(client, server.name, file_path)
+        client.close()
+        return '', 200
+    except Exception as e:
+        return str(e), 500
+
 @app.route('/server/<int:server_id>/files', methods=['GET', 'POST'])
 @login_required
 def files(server_id):
@@ -588,12 +460,7 @@ def files(server_id):
             if f.filename:
                 content = f.read().decode('utf-8')
                 try:
-                    client = ssh_connect(
-                        host=server.ssh_host,
-                        port=server.ssh_port,
-                        user=server.ssh_user,
-                        password=server.get_password()
-                    )
+                    client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
                     write_file_content(client, server.name, path + '/' + f.filename if path else f.filename, content)
                     client.close()
                     flash('Файл загружен')
@@ -602,12 +469,7 @@ def files(server_id):
         if 'new_dir' in request.form:
             dirname = request.form['new_dir']
             try:
-                client = ssh_connect(
-                    host=server.ssh_host,
-                    port=server.ssh_port,
-                    user=server.ssh_user,
-                    password=server.get_password()
-                )
+                client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
                 create_directory(client, server.name, path + '/' + dirname if path else dirname)
                 client.close()
                 flash('Директория создана')
@@ -616,12 +478,7 @@ def files(server_id):
         return redirect(url_for('files', server_id=server.id, path=path))
     file_list = []
     try:
-        client = ssh_connect(
-            host=server.ssh_host,
-            port=server.ssh_port,
-            user=server.ssh_user,
-            password=server.get_password()
-        )
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
         file_list = list_files(client, server.name, path)
         client.close()
     except Exception as e:
@@ -636,12 +493,7 @@ def download_file(server_id):
     if not file_path:
         abort(400)
     try:
-        client = ssh_connect(
-            host=server.ssh_host,
-            port=server.ssh_port,
-            user=server.ssh_user,
-            password=server.get_password()
-        )
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
         content = get_file_content(client, server.name, file_path)
         client.close()
         if content is None:
@@ -654,18 +506,14 @@ def download_file(server_id):
 
 @app.route('/server/<int:server_id>/files/delete', methods=['POST'])
 @login_required
-def delete_file(server_id):
+def delete_server_file(server_id):
+    # ... код
     server = get_server_or_404(server_id)
     file_path = request.args.get('file')
     if not file_path:
         abort(400)
     try:
-        client = ssh_connect(
-            host=server.ssh_host,
-            port=server.ssh_port,
-            user=server.ssh_user,
-            password=server.get_password()
-        )
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
         delete_file(client, server.name, file_path)
         client.close()
         return '', 200
@@ -678,12 +526,7 @@ def config(server_id):
     server = get_server_or_404(server_id)
     if request.method == 'POST':
         try:
-            client = ssh_connect(
-                host=server.ssh_host,
-                port=server.ssh_port,
-                user=server.ssh_user,
-                password=server.get_password()
-            )
+            client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
             props = {}
             for key, value in request.form.items():
                 if key.startswith('prop_'):
@@ -697,12 +540,7 @@ def config(server_id):
         return redirect(url_for('config', server_id=server.id))
     props = {}
     try:
-        client = ssh_connect(
-            host=server.ssh_host,
-            port=server.ssh_port,
-            user=server.ssh_user,
-            password=server.get_password()
-        )
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
         props = read_server_properties(client, server.name)
         client.close()
     except Exception as e:
@@ -715,12 +553,7 @@ def plugins(server_id):
     server = get_server_or_404(server_id)
     installed_plugins = []
     try:
-        client = ssh_connect(
-            host=server.ssh_host,
-            port=server.ssh_port,
-            user=server.ssh_user,
-            password=server.get_password()
-        )
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
         plugins_dir = f"/home/{server.ssh_user}/minecraft_servers/{server.name}/plugins"
         out, err, code = execute_command(client, f"ls -la {plugins_dir}")
         if code == 0:
@@ -737,12 +570,7 @@ def plugins(server_id):
         plugin_name = request.form.get('plugin_name')
         if plugin_url and plugin_name:
             try:
-                client = ssh_connect(
-                    host=server.ssh_host,
-                    port=server.ssh_port,
-                    user=server.ssh_user,
-                    password=server.get_password()
-                )
+                client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
                 install_plugin(client, server.name, plugin_url, plugin_name)
                 client.close()
                 flash('Плагин установлен')
@@ -757,12 +585,7 @@ def mods(server_id):
     server = get_server_or_404(server_id)
     installed_mods = []
     try:
-        client = ssh_connect(
-            host=server.ssh_host,
-            port=server.ssh_port,
-            user=server.ssh_user,
-            password=server.get_password()
-        )
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
         mods_dir = f"/home/{server.ssh_user}/minecraft_servers/{server.name}/mods"
         out, err, code = execute_command(client, f"ls -la {mods_dir}")
         if code == 0:
@@ -783,12 +606,7 @@ def backups(server_id):
     if request.method == 'POST':
         if 'create' in request.form:
             try:
-                client = ssh_connect(
-                    host=server.ssh_host,
-                    port=server.ssh_port,
-                    user=server.ssh_user,
-                    password=server.get_password()
-                )
+                client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
                 backup_file = create_backup(client, server.name)
                 client.close()
                 if backup_file:
@@ -801,12 +619,7 @@ def backups(server_id):
             backup_name = request.form.get('backup_name')
             if backup_name:
                 try:
-                    client = ssh_connect(
-                        host=server.ssh_host,
-                        port=server.ssh_port,
-                        user=server.ssh_user,
-                        password=server.get_password()
-                    )
+                    client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
                     restore_backup(client, server.name, backup_name)
                     client.close()
                     flash('Бэкап восстановлен')
@@ -815,12 +628,7 @@ def backups(server_id):
         return redirect(url_for('backups', server_id=server.id))
     backups_list = []
     try:
-        client = ssh_connect(
-            host=server.ssh_host,
-            port=server.ssh_port,
-            user=server.ssh_user,
-            password=server.get_password()
-        )
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
         backups_list = list_backups(client, server.name)
         client.close()
     except Exception as e:
@@ -832,37 +640,37 @@ def backups(server_id):
 def ports(server_id):
     server = get_server_or_404(server_id)
     port = 25565
+    server_ip = ''
+    free_ports = []
     try:
-        client = ssh_connect(
-            host=server.ssh_host,
-            port=server.ssh_port,
-            user=server.ssh_user,
-            password=server.get_password()
-        )
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
         props = read_server_properties(client, server.name)
         port = int(props.get('server-port', 25565))
+        server_ip = props.get('server-ip', '')
+        # Собираем свободные порты для отображения
+        for p in range(25565, 25585):
+            if is_port_free(client, p):
+                free_ports.append(p)
         client.close()
-    except:
-        pass
+    except Exception as e:
+        flash(f'Ошибка чтения: {e}')
     if request.method == 'POST':
         new_port = request.form.get('port')
-        if new_port:
-            try:
-                client = ssh_connect(
-                    host=server.ssh_host,
-                    port=server.ssh_port,
-                    user=server.ssh_user,
-                    password=server.get_password()
-                )
-                props = read_server_properties(client, server.name)
+        new_ip = request.form.get('server_ip')
+        try:
+            client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
+            props = read_server_properties(client, server.name)
+            if new_port:
                 props['server-port'] = new_port
-                write_server_properties(client, server.name, props)
-                client.close()
-                flash('Порт обновлён (требуется перезапуск сервера)')
-            except Exception as e:
-                flash(f'Ошибка: {e}')
+            if new_ip is not None:
+                props['server-ip'] = new_ip
+            write_server_properties(client, server.name, props)
+            client.close()
+            flash('Порт и IP обновлены (требуется перезапуск сервера)')
+        except Exception as e:
+            flash(f'Ошибка: {e}')
         return redirect(url_for('ports', server_id=server.id))
-    return render_template('ports.html', server=server, port=port, active_page='ports')
+    return render_template('ports.html', server=server, port=port, server_ip=server_ip, free_ports=free_ports, active_page='ports')
 
 @app.route('/server/<int:server_id>/domain', methods=['GET', 'POST'])
 @login_required
@@ -886,6 +694,7 @@ def startup(server_id):
         server.memory_percent = int(request.form.get('memory_percent', server.memory_percent))
         server.timezone = request.form.get('timezone', server.timezone)
         server.garbage_collector = request.form.get('garbage_collector', server.garbage_collector)
+        server.java_path = request.form.get('java_path', server.java_path if hasattr(server, 'java_path') else 'java')
         db.session.commit()
         flash('Строка запуска обновлена')
         return redirect(url_for('startup', server_id=server.id))
@@ -928,7 +737,7 @@ def coowners(server_id):
             else:
                 flash(f'Пользователь {username} не является совладельцем')
         return redirect(url_for('coowners', server_id=server.id))
-    coowners_list = server.co_owners.all()  # получаем объекты User
+    coowners_list = server.co_owners.all()
     return render_template('coowners.html', server=server, coowners=coowners_list, active_page='coowners')
 
 @app.route('/server/<int:server_id>/change-core', methods=['GET', 'POST'])
@@ -940,20 +749,14 @@ def change_core(server_id):
         new_version = request.form.get('mc_version')
         if new_type and new_version:
             try:
-                client = ssh_connect(
-                    host=server.ssh_host,
-                    port=server.ssh_port,
-                    user=server.ssh_user,
-                    password=server.get_password()
-                )
+                client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
                 stop_server(client, server.name)
                 execute_command(client, f"rm -f ~/minecraft_servers/{server.name}/server.jar")
                 jar_url = get_jar_url(new_type, new_version)
                 if not jar_url:
                     flash('Не найден URL для указанного ядра и версии')
                     return redirect(url_for('change_core', server_id=server.id))
-                execute_command(client, f"wget -O ~/minecraft_servers/{server.name}/server.jar {jar_url}")
-                # Переименовываем на случай, если имя другое
+                execute_command(client, f"curl -L -o ~/minecraft_servers/{server.name}/server.jar {jar_url}")
                 rename_jar_to_server(client, f"/home/{server.ssh_user}/minecraft_servers/{server.name}")
                 server.server_type = new_type
                 server.mc_version = new_version
@@ -963,44 +766,18 @@ def change_core(server_id):
             except Exception as e:
                 flash(f'Ошибка: {e}')
         return redirect(url_for('change_core', server_id=server.id))
-
     return render_template('change_core.html', server=server, versions=versions, active_page='change_core')
 
-#Моды и плагины
-
-@app.route('/api/modrinth/install/<int:server_id>', methods=['POST'])
-@login_required
-def modrinth_install(server_id):
-    """Устанавливает мод/плагин на сервер."""
-    server = get_server_or_404(server_id)
-    data = request.get_json()
-    project_id = data.get('project_id')
-    version_id = data.get('version_id')
-    project_type = data.get('type')  # 'mod' или 'plugin'
-
-    if not project_id or not version_id or not project_type:
-        return jsonify({'error': 'Missing required fields'}), 400
-
-    try:
-        client = ssh_connect(
-            host=server.ssh_host,
-            port=server.ssh_port,
-            user=server.ssh_user,
-            password=server.get_password()
-        )
-        filename = install_modrinth_project(client, server.name, project_id, version_id, project_type)
-        client.close()
-        return jsonify({'success': True, 'filename': filename})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
+# ------------------------------------------------------------
+# Modrinth API
+# ------------------------------------------------------------
 @app.route('/api/modrinth/search')
 @login_required
 def modrinth_search():
     query = request.args.get('query', '')
-    project_type = request.args.get('type', 'mod')  # 'mod' или 'plugin'
-    version = request.args.get('version', '')  # версия Minecraft, например '1.20.4'
-    loader = request.args.get('loader', '')  # для модов: fabric, neoforge, forge, quilt
+    project_type = request.args.get('type', 'mod')
+    version = request.args.get('version', '')
+    loader = request.args.get('loader', '')
     limit = int(request.args.get('limit', 20))
     if not query:
         return jsonify({'projects': []})
@@ -1009,14 +786,10 @@ def modrinth_search():
     if version:
         facets.append([f'versions:{version}'])
     if loader and project_type == 'mod':
-        facets.append([f'categories:{loader}'])  # или facets: [['categories:fabric']]
-    # Формируем запрос
+        facets.append([f'categories:{loader}'])
+
     url = "https://api.modrinth.com/v2/search"
-    params = {
-        'query': query,
-        'limit': limit,
-        'facets': json.dumps(facets)
-    }
+    params = {'query': query, 'limit': limit, 'facets': json.dumps(facets)}
     try:
         resp = requests.get(url, params=params, timeout=10)
         if resp.status_code != 200:
@@ -1049,36 +822,46 @@ def modrinth_versions(project_id):
         resp = requests.get(url, timeout=10)
         if resp.status_code != 200:
             return jsonify({'error': 'Failed to fetch versions'}), 500
-        versions = resp.json()
+        versions_data = resp.json()
         result = []
-        for v in versions:
-            # Фильтруем по версии Minecraft и загрузчику, если указаны
+        for v in versions_data:
             game_versions = v.get('game_versions', [])
             if version_filter and version_filter not in game_versions:
                 continue
-            if loader_filter:
-                # Проверяем, есть ли загрузчик в списке loaders
-                loaders = v.get('loaders', [])
-                if loader_filter not in loaders:
-                    continue
+            if loader_filter and loader_filter not in v.get('loaders', []):
+                continue
             result.append({
                 'id': v['id'],
                 'version_number': v.get('version_number', ''),
                 'game_versions': v.get('game_versions', []),
-                'release_channel': v.get('release_channel', ''),
                 'loaders': v.get('loaders', []),
+                'release_channel': v.get('release_channel', ''),
                 'files': v.get('files', [])
             })
         return jsonify({'versions': result})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/server/<int:server_id>/console')
+@app.route('/api/modrinth/install/<int:server_id>', methods=['POST'])
 @login_required
-def console(server_id):
+def modrinth_install(server_id):
     server = get_server_or_404(server_id)
-    return render_template('console.html', server=server, active_page='console')
+    data = request.get_json()
+    project_id = data.get('project_id')
+    version_id = data.get('version_id')
+    project_type = data.get('type')
+    if not project_id or not version_id or not project_type:
+        return jsonify({'error': 'Missing required fields'}), 400
+    try:
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
+        filename = install_modrinth_project(client, server.name, project_id, version_id, project_type)
+        client.close()
+        return jsonify({'success': True, 'filename': filename})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-# ---------- Запуск ----------
+# ------------------------------------------------------------
+# Запуск
+# ------------------------------------------------------------
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False)

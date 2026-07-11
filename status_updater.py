@@ -18,7 +18,7 @@ class StatusUpdater(threading.Thread):
                     servers = Server.query.all()
                     for server in servers:
                         try:
-                            client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
+                            client = ssh_connect(host=server.ssh_host, port=server.ssh_port, user=server.ssh_user, password=server.get_password())
                             status = get_status(client, server.name)
                             if server.status != status:
                                 server.status = status
