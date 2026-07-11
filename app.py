@@ -392,7 +392,7 @@ def api_send_command(server_id):
 def api_get_logs(server_id):
     try:
         server = get_server_or_404(server_id)
-        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password)
         logs = get_logs(client, server.name, lines=50)
         client.close()
         return jsonify({'logs': logs})
