@@ -28,6 +28,7 @@
                     <a class="nav-link {% if request.endpoint == 'ports' %}active{% endif %}" href="{{ url_for('ports', server_id=server.id) }}">🔌 Порты</a>
 <!--                    <a class="nav-link {% if request.endpoint == 'domain' %}active{% endif %}" href="{{ url_for('domain', server_id=server.id) }}">🌐 Домен</a>-->
                     <a class="nav-link {% if request.endpoint == 'startup' %}active{% endif %}" href="{{ url_for('startup', server_id=server.id) }}">🚀 Строка запуска</a>
+                    <a class="nav-link {% if request.endpoint == 'ssh_settings' %}active{% endif %}" href="{{ url_for('ssh_settings', server_id=server.id) }}">🔐 SSH Настройки</a>
                     <a class="nav-link {% if request.endpoint == 'settings' %}active{% endif %}" href="{{ url_for('settings', server_id=server.id) }}">⚙️ Настройки</a>
                     <a class="nav-link {% if request.endpoint == 'coowners' %}active{% endif %}" href="{{ url_for('coowners', server_id=server.id) }}">👥 Совладельцы</a>
                 {% endif %}

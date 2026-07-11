@@ -20,30 +20,33 @@
             </thead>
             <tbody>
                 {% for f in files %}
-                <tr>
-                    <td>
-                        {% if f.perms.startswith('d') %}
-                            📁 <a href="{{ url_for('files', server_id=server.id, path=(path + '/' + f.name) if path else f.name) }}">{{ f.name }}</a>
-                        {% else %}
-                            📄 {{ f.name }}
-                        {% endif %}
-                    </td>
-                    <td>{{ f.size }}</td>
-                    <td>{{ f.date }}</td>
-                    <td>
-                        {% if not f.perms.startswith('d') %}
-                        <a href="{{ url_for('download_file', server_id=server.id, file=(path + '/' + f.name) if path else f.name) }}" class="btn btn-sm btn-outline-primary">Скачать</a>
-                        <a href="#" class="btn btn-sm btn-outline-danger" onclick="if(confirm('Удалить?')){ fetch('{{ url_for('delete_file', server_id=server.id) }}?file={{ (path + '/' + f.name) if path else f.name }}', {method:'POST'}).then(()=>location.reload()) }">Удалить</a>
-                        {% endif %}
-                    </td>
-                </tr>
+                    {% if f.name not in ['.', '..'] %}
+                    <tr>
+                        <td>
+                            {% if f.perms.startswith('d') %}
+                                📁 <a href="{{ url_for('files', server_id=server.id, path=(path + '/' + f.name) if path else f.name) }}">{{ f.name }}</a>
+                            {% else %}
+                                📄 {{ f.name }}
+                            {% endif %}
+                        </td>
+                        <td>{{ f.size }}</td>
+                        <td>{{ f.date }}</td>
+                        <td>
+                            {% if not f.perms.startswith('d') %}
+                                <a href="{{ url_for('edit_file', server_id=server.id, path=(path + '/' + f.name) if path else f.name) }}" class="btn btn-sm btn-outline-warning">✏️ Редактировать</a>
+                                <a href="{{ url_for('download_file', server_id=server.id, file=(path + '/' + f.name) if path else f.name) }}" class="btn btn-sm btn-outline-primary">Скачать</a>
+                            {% endif %}
+                            <a href="#" class="btn btn-sm btn-outline-danger" onclick="if(confirm('Удалить?')){ fetch('{{ url_for('delete_file', server_id=server.id) }}?file={{ (path + '/' + f.name) if path else f.name }}', {method:'POST'}).then(()=>location.reload()) }">Удалить</a>
+                        </td>
+                    </tr>
+                    {% endif %}
                 {% endfor %}
             </tbody>
         </table>
     </div>
 </div>
 
-<!-- Модальные окна -->
+<!-- Модальные окна для создания папки и загрузки файла (оставляем как есть) -->
 <div class="modal fade" id="newDirModal" tabindex="-1">
     <div class="modal-dialog">
         <div class="modal-content bg-dark text-light">

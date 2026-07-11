@@ -1,18 +1,17 @@
-{% extends "base.html" %}
-{% block title %}Порты – {{ server.name }}{% endblock %}
-{% block content %}
-<h2>Управление портами</h2>
-<div class="card">
-    <div class="card-body">
-        <form method="post">
-            <div class="mb-2">
-                <label class="form-label">Порт сервера</label>
-                <input type="number" name="port" value="{{ port }}" class="form-control" min="1" max="65535">
-            </div>
-            <button type="submit" class="btn btn-primary">Изменить порт</button>
-        </form>
-        <p class="text-muted mt-2">После изменения порта необходимо перезапустить сервер.</p>
-    </div>
+<div class="mb-2">
+    <label class="form-label">Порт сервера</label>
+    <input type="number" name="port" value="{{ port }}" class="form-control" min="1" max="65535">
 </div>
-<a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-secondary">Назад</a>
-{% endblock %}
+<div class="mb-2">
+    <label class="form-label">IP сервера (server-ip)</label>
+    <input type="text" name="server_ip" value="{{ server_ip }}" class="form-control" placeholder="Оставьте пустым для всех интерфейсов">
+</div>
+<div class="mb-2">
+    <label class="form-label">Свободные порты (рекомендуемые)</label>
+    <div>
+        {% for p in free_ports %}
+            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="document.querySelector('input[name=port]').value = {{ p }}">{{ p }}</button>
+        {% endfor %}
+    </div>
+    <small class="text-muted">Нажмите на порт, чтобы подставить его в поле выше.</small>
+</div>

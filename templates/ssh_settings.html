@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}SSH настройки – {{ server.name }}{% endblock %}
+{% block content %}
+<h2>SSH настройки сервера {{ server.name }}</h2>
+<div class="card">
+    <div class="card-body">
+        <form method="post">
+            <div class="mb-2">
+                <label class="form-label">SSH-хост (IP/домен)</label>
+                <input type="text" name="ssh_host" value="{{ server.ssh_host }}" class="form-control" required>
+            </div>
+            <div class="mb-2">
+                <label class="form-label">SSH-порт</label>
+                <input type="number" name="ssh_port" value="{{ server.ssh_port }}" class="form-control" min="1" max="65535" required>
+            </div>
+            <div class="mb-2">
+                <label class="form-label">SSH-пользователь</label>
+                <input type="text" name="ssh_user" value="{{ server.ssh_user }}" class="form-control" required>
+            </div>
+            <button type="submit" class="btn btn-primary">Сохранить настройки SSH</button>
+        </form>
+        <p class="text-muted mt-2">⚠️ Изменение этих параметров повлияет на подключение к удалённому серверу. Убедитесь, что новые данные верны.</p>
+    </div>
+</div>
+<a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-secondary">Назад</a>
+{% endblock %}

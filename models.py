@@ -30,6 +30,7 @@ class Server(db.Model):
     ssh_password_enc = db.Column(db.String(255), nullable=False)
     status = db.Column(db.String(20), default='offline')
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    java_path = db.Column(db.String(255), default="java")
 
     # Дополнительные поля
     startup_command = db.Column(db.Text, default="java -Xms128M -Xmx1024M -jar server.jar nogui")

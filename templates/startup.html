@@ -25,5 +25,32 @@
         </form>
     </div>
 </div>
+
+<div class="mb-2">
+    <label class="form-label">Путь к Java</label>
+    <input type="text" name="java_path" value="{{ server.java_path or 'java' }}" class="form-control" placeholder="Например: /usr/lib/jvm/java-17-openjdk-amd64/bin/java">
+    <small class="text-muted">Оставьте 'java' для использования системной Java. Для автоматического выбора версии используйте кнопку ниже.</small>
+</div>
+<div class="mb-2">
+    <button type="button" class="btn btn-secondary btn-sm" id="detect-java">Определить оптимальную Java</button>
+    <span id="java-suggestion"></span>
+</div>
+
 <a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-secondary">Назад</a>
+
+<script>
+    document.getElementById('detect-java').addEventListener('click', function() {
+        const version = document.querySelector('select[name="mc_version"]').value;
+        fetch(`/api/detect_java/${serverId}?version=${version}`)
+            .then(res => res.json())
+            .then(data => {
+                if (data.java_path) {
+                    document.querySelector('input[name="java_path"]').value = data.java_path;
+                    document.getElementById('java-suggestion').textContent = '✓ Рекомендуемая Java: ' + data.java_path;
+                } else {
+                    document.getElementById('java-suggestion').textContent = 'Не удалось определить Java';
+                }
+            });
+    });
+</script>
 {% endblock %}
