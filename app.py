@@ -412,11 +412,12 @@ def edit_file(server_id):
         abort(400)
 
     if request.method == 'POST':
-        content = f.read().decode('utf-8')
+        content = request.form.get('content')
         if content is None:
             abort(400)
         try:
             client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
+            # Записываем с явной кодировкой UTF-8
             write_file_content(client, server.name, file_path, content)
             client.close()
             flash('Файл сохранён')
@@ -427,6 +428,7 @@ def edit_file(server_id):
     # GET: читаем содержимое файла
     try:
         client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
+        # Читаем с UTF-8
         content = get_file_content(client, server.name, file_path)
         client.close()
         if content is None:
@@ -867,4 +869,4 @@ def modrinth_install(server_id):
 # Запуск
 # ------------------------------------------------------------
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
+    socketio.run(app, debug=False, host='0.0.0.0', port=5000)

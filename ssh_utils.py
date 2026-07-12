@@ -450,20 +450,15 @@ def rename_jar_to_server(client, server_dir):
         execute_command(client, mv_cmd, timeout=5)
 
 def get_file_content(client, server_name, file_path):
-    """Читает содержимое файла в кодировке UTF-8."""
     full = f"/home/{client._transport.get_username()}/minecraft_servers/{server_name}/{file_path}"
-    # Команда cat выводит байты, мы их декодируем в UTF-8
-    out, err, code = execute_command(client, f"cat {full}", timeout=5)
+    out, err, code = execute_command(client, f"cat {full}", timeout=10)
     if code == 0:
-        try:
-            return out
-        except UnicodeDecodeError:
-            # Если UTF-8 не подходит, пробуем другие кодировки (но лучше вернуть как есть)
-            return out
+        return out
     return None
 
 def write_file_content(client, server_name, file_path, content):
     full = f"/home/{client._transport.get_username()}/minecraft_servers/{server_name}/{file_path}"
+    # Записываем во временный файл с UTF-8
     with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', newline='\n', delete=False, suffix='.tmp') as tmp:
         tmp.write(content)
         tmp_path = tmp.name
