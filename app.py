@@ -10,10 +10,13 @@ from flask_compress import Compress
 import json
 import requests
 from sqlalchemy import text
+import sys
+import io
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 # -----------------------------------------------
 # Список версий для разных типов ядер
-# (оставлен как в вашем коде)
 # -----------------------------------------------
 versions = {
     'vanilla': ['26.2', '26.1.2', '26.1.1', '26.1', '1.21.11', '1.21.10', '1.21.9', '1.21.8', '1.21.7', '1.21.6',
@@ -267,7 +270,7 @@ def start_server_route(server_id):
     try:
         password = server.get_password()
         client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, password)
-        start_server_via_nohup(client, server.name, password, server.java_path if hasattr(server, 'java_path') else "java")
+        start_server_via_screen(client, server.name, password, server.java_path if hasattr(server, 'java_path') else "java")
         client.close()
         server.status = 'running'
         db.session.commit()
@@ -409,7 +412,7 @@ def edit_file(server_id):
         abort(400)
 
     if request.method == 'POST':
-        content = request.form.get('content')
+        content = f.read().decode('utf-8')
         if content is None:
             abort(400)
         try:

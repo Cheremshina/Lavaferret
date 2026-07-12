@@ -5,7 +5,8 @@ import tempfile
 import requests
 import json
 import re
-import subprocess
+
+# ---------- Конфигурация JAR ----------
 
 def get_jar_url(server_type, version):
     if server_type == 'vanilla':
@@ -305,26 +306,19 @@ def ssh_connect(host, port, user, password):
         )
         transport = client.get_transport()
         if transport:
-            transport.set_keepalive(30)  # отправка keepalive каждые 30 секунд
+            transport.set_keepalive(30)
         return client
     except Exception as e:
         raise Exception(f"SSH connection failed: {str(e)}")
 
-def execute_command(client, command, sudo=False, timeout=180, retries=3):
-    """
-    Выполняет команду на удалённом сервере с повторными попытками и переподключением.
-    """
+def execute_command(client, command, sudo=False, timeout=60, retries=3):
     if sudo:
         command = f"sudo {command}"
-
     for attempt in range(retries + 1):
         try:
-            # Проверяем транспорт
             transport = client.get_transport()
             if not transport or not transport.is_active():
                 raise Exception("SSH transport is not active")
-
-            # Выполняем команду
             stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
             exit_status = stdout.channel.recv_exit_status()
             output = stdout.read().decode()
@@ -333,9 +327,7 @@ def execute_command(client, command, sudo=False, timeout=180, retries=3):
             stderr.close()
             stdin.close()
             return output, error, exit_status
-
         except Exception as e:
-            # Закрываем каналы, если они открыты
             try:
                 stdout.close()
             except:
@@ -348,67 +340,52 @@ def execute_command(client, command, sudo=False, timeout=180, retries=3):
                 stdin.close()
             except:
                 pass
-
             if attempt < retries:
-                # Если соединение потеряно, пробуем переподключиться
-                if "transport" in str(e).lower() or "socket" in str(e).lower():
-                    # Переподключаемся (нужны параметры, но мы их не храним)
-                    # Можно выбросить исключение, чтобы пересоздать клиент на уровне выше
-                    raise Exception(f"SSH connection lost, reconnect required: {e}")
                 time.sleep(5 * (attempt + 1))
                 continue
             raise Exception(f"Command execution failed after {retries+1} attempts: {str(e)}")
-
     return "", "", -1
 
 # ---------- Работа с Java ----------
 def get_required_java_version(mc_version):
-    # Убираем суффиксы
     base = re.sub(r'[-_].*$', '', mc_version)
     parts = base.split('.')
     if len(parts) >= 2:
         major = int(parts[0])
         minor = int(parts[1])
         patch = int(parts[2]) if len(parts) >= 3 else 0
-
         if major == 1:
             if minor == 20 and patch >= 5:
-                return 21  # 1.20.5+
+                return 21
             elif minor >= 17:
-                return 17  # 1.17 - 1.20.4 и все 1.21.x (minor=21)
+                return 17
             else:
-                return 8  # 1.16 и ниже
+                return 8
         elif major >= 20:
-            return 17  # для версий 20+ (например, 20.0) используем 17 как запасной
+            return 17
     return 17
 
 def ensure_java_installed(client, password=None, required_version=None):
     if required_version is None:
         required_version = 17
-
     # Проверяем, какая Java установлена по умолчанию
     out, err, code = execute_command(client, "java -version 2>&1 | head -1 | grep -oE 'version \"[0-9]+' | grep -oE '[0-9]+'", timeout=5)
     if code == 0 and out.strip():
-        installed_version = int(out.strip())
-        if installed_version == required_version:
-            # Проверяем, доступен ли путь к Java этой версии
+        installed = int(out.strip())
+        if installed == required_version:
+            # Проверяем путь
             find_path = f"update-alternatives --list java 2>/dev/null | grep 'java-{required_version}' | head -1"
             out_path, err_path, code_path = execute_command(client, find_path, timeout=5)
             if code_path == 0 and out_path.strip():
                 return out_path.strip()
             else:
-                # Если путь не найден, попробуем найти в стандартных местах
-                for p in [
-                    f"/usr/lib/jvm/java-{required_version}-openjdk-amd64/bin/java",
-                    f"/usr/lib/jvm/java-{required_version}-openjdk/bin/java",
-                ]:
+                for p in [f"/usr/lib/jvm/java-{required_version}-openjdk-amd64/bin/java", f"/usr/lib/jvm/java-{required_version}-openjdk/bin/java"]:
                     test_cmd = f"test -f {p} && echo '{p}'"
                     out_test, _, _ = execute_command(client, test_cmd, timeout=5)
                     if out_test.strip():
                         return out_test.strip()
-                return "java"  # fallback
-
-    # Установка нужной версии
+                return "java"
+    # Установка
     out_os, err_os, code_os = execute_command(client, "cat /etc/os-release | grep -E '^ID=' | cut -d= -f2")
     os_id = out_os.strip().lower().strip('"')
     pkg = f"openjdk-{required_version}-jre-headless"
@@ -428,27 +405,20 @@ def ensure_java_installed(client, password=None, required_version=None):
         install_cmd = f"yum install -y {pkg} || dnf install -y {pkg}"
     else:
         raise Exception("Unsupported OS for auto Java installation")
-
     if password:
         escaped = password.replace("'", "'\\''")
         full_cmd = f"echo '{escaped}' | sudo -S bash -c '{install_cmd}'"
     else:
         full_cmd = f"sudo bash -c '{install_cmd}'"
-
-    out, err, code = execute_command(client, full_cmd, timeout=90)
+    out, err, code = execute_command(client, full_cmd, timeout=120)
     if code != 0:
         raise Exception(f"Failed to install Java {required_version}: {err}")
-
-    # Находим путь к установленной Java
+    # Находим путь
     find_path = f"update-alternatives --list java 2>/dev/null | grep 'java-{required_version}' | head -1"
     out_path, err_path, code_path = execute_command(client, find_path, timeout=5)
     if code_path == 0 and out_path.strip():
         return out_path.strip()
-    # fallback
-    for p in [
-        f"/usr/lib/jvm/java-{required_version}-openjdk-amd64/bin/java",
-        f"/usr/lib/jvm/java-{required_version}-openjdk/bin/java",
-    ]:
+    for p in [f"/usr/lib/jvm/java-{required_version}-openjdk-amd64/bin/java", f"/usr/lib/jvm/java-{required_version}-openjdk/bin/java"]:
         test_cmd = f"test -f {p} && echo '{p}'"
         out_test, _, _ = execute_command(client, test_cmd, timeout=5)
         if out_test.strip():
@@ -465,7 +435,7 @@ def find_free_port(client, base_port=25565, max_attempts=20):
     for port in range(base_port, base_port + max_attempts):
         if is_port_free(client, port):
             return port
-    raise Exception("No free port found in range")
+    raise Exception("No free port found")
 
 # ---------- Работа с файлами ----------
 def rename_jar_to_server(client, server_dir):
@@ -480,15 +450,21 @@ def rename_jar_to_server(client, server_dir):
         execute_command(client, mv_cmd, timeout=5)
 
 def get_file_content(client, server_name, file_path):
+    """Читает содержимое файла в кодировке UTF-8."""
     full = f"/home/{client._transport.get_username()}/minecraft_servers/{server_name}/{file_path}"
+    # Команда cat выводит байты, мы их декодируем в UTF-8
     out, err, code = execute_command(client, f"cat {full}", timeout=5)
     if code == 0:
-        return out
+        try:
+            return out
+        except UnicodeDecodeError:
+            # Если UTF-8 не подходит, пробуем другие кодировки (но лучше вернуть как есть)
+            return out
     return None
 
 def write_file_content(client, server_name, file_path, content):
     full = f"/home/{client._transport.get_username()}/minecraft_servers/{server_name}/{file_path}"
-    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.tmp') as tmp:
+    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', newline='\n', delete=False, suffix='.tmp') as tmp:
         tmp.write(content)
         tmp_path = tmp.name
     try:
@@ -500,15 +476,15 @@ def write_file_content(client, server_name, file_path, content):
 
 def delete_file(client, server_name, file_path):
     full = f"/home/{client._transport.get_username()}/minecraft_servers/{server_name}/{file_path}"
-    execute_command(client, f"rm -rf {full}")
+    execute_command(client, f"rm -rf {full}", timeout=10)
 
 def create_directory(client, server_name, dir_path):
     full = f"/home/{client._transport.get_username()}/minecraft_servers/{server_name}/{dir_path}"
-    execute_command(client, f"mkdir -p {full}")
+    execute_command(client, f"mkdir -p {full}", timeout=10)
 
 def list_files(client, server_name, path=''):
     full = f"/home/{client._transport.get_username()}/minecraft_servers/{server_name}/{path}"
-    out, err, code = execute_command(client, f"ls -la {full}", timeout=5)
+    out, err, code = execute_command(client, f"ls -la {full}", timeout=10)
     files = []
     if code == 0:
         lines = out.strip().split('\n')
@@ -517,6 +493,9 @@ def list_files(client, server_name, path=''):
                 continue
             parts = line.split(maxsplit=8)
             if len(parts) >= 9:
+                name = parts[8]
+                if name in ('.', '..'):
+                    continue
                 files.append({
                     'perms': parts[0],
                     'links': parts[1],
@@ -524,15 +503,9 @@ def list_files(client, server_name, path=''):
                     'group': parts[3],
                     'size': parts[4],
                     'date': parts[5]+' '+parts[6]+' '+parts[7],
-                    'name': parts[8]
+                    'name': name
                 })
     return files
-
-def delete_file_or_directory(client, server_name, path):
-    """Удаляет файл или директорию (рекурсивно)."""
-    full_path = f"/home/{client._transport.get_username()}/minecraft_servers/{server_name}/{path}"
-    execute_command(client, f"rm -rf {full_path}")
-    return True
 
 # ---------- Работа с server.properties ----------
 def read_server_properties(client, server_name):
@@ -550,71 +523,41 @@ def write_server_properties(client, server_name, props):
     content = "\n".join([f"{k}={v}" for k, v in props.items()])
     write_file_content(client, server_name, 'server.properties', content)
 
-# ---------- Запуск через nohup + RCON ----------
-def ensure_rcon_installed(client, password=None):
-    # Проверяем, установлен ли mcrcon
-    out, err, code = execute_command(client, "which mcrcon", timeout=10)
+# ---------- Screen-функции ----------
+def ensure_screen_installed(client, password=None):
+    out, err, code = execute_command(client, "which screen", timeout=5)
     if code == 0 and out.strip():
         return True
-
-    # Пробуем через apt
-    if password:
-        cmd_apt = f"echo '{password}' | sudo -S bash -c 'apt update && apt install -y mcrcon'"
+    out_os, err_os, code_os = execute_command(client, "cat /etc/os-release | grep -E '^ID=' | cut -d= -f2")
+    os_id = out_os.strip().lower().strip('"')
+    if 'ubuntu' in os_id or 'debian' in os_id:
+        install_cmd = "apt update && apt install -y screen"
+    elif 'centos' in os_id or 'rhel' in os_id or 'fedora' in os_id:
+        install_cmd = "yum install -y screen || dnf install -y screen"
     else:
-        cmd_apt = "sudo apt update && sudo apt install -y mcrcon -y"
-    out1, err1, code1 = execute_command(client, cmd_apt, timeout=120)
-    if code1 == 0 and execute_command(client, "which mcrcon", timeout=10)[2] == 0:
-        return True
-
-    # Альтернативная установка вручную (без apt)
-    steps = [
-        "wget -O /tmp/mcrcon.tar.gz https://github.com/Tiiffi/mcrcon/releases/download/v0.7.1/mcrcon-0.7.1-linux-x86-64.tar.gz",
-        "cd /tmp && tar -xzf mcrcon.tar.gz",
-        "sudo cp /tmp/mcrcon /usr/local/bin/",
-        "sudo chmod +x /usr/local/bin/mcrcon"
-    ]
-    for step in steps:
-        if password:
-            full = f"echo '{password}' | sudo -S bash -c '{step}'"
-        else:
-            full = step
-        out, err, code = execute_command(client, full, timeout=60)
-        if code != 0:
-            raise Exception(f"Failed at step: {step}\n{err}")
+        raise Exception("Unsupported OS for screen installation")
+    if password:
+        escaped = password.replace("'", "'\\''")
+        full_cmd = f"echo '{escaped}' | sudo -S bash -c '{install_cmd}'"
+    else:
+        full_cmd = f"sudo bash -c '{install_cmd}'"
+    out, err, code = execute_command(client, full_cmd, timeout=60)
+    if code != 0:
+        raise Exception(f"Failed to install screen: {err}")
     return True
 
 def is_server_running(client, server_name):
-    """
-    Проверяет, запущен ли сервер: проверяет PID-файл и наличие "Done" в логах.
-    """
-    username = client._transport.get_username()
-    server_dir = f"/home/{username}/minecraft_servers/{server_name}"
-    pid_file = f"{server_dir}/server.pid"
-
-    # 1. Проверка PID-файла
-    out, err, code = execute_command(client, f"cat {pid_file} 2>/dev/null", timeout=5)
+    # Проверка screen-сессии
+    screen_cmd = f"screen -ls | grep 'mc-{server_name}'"
+    out, err, code = execute_command(client, screen_cmd, timeout=5)
     if code == 0 and out.strip():
-        pid = out.strip()
-        check_cmd = f"ps -p {pid} | grep java | wc -l"
-        out2, err2, code2 = execute_command(client, check_cmd, timeout=5)
-        if code2 == 0 and int(out2.strip()) > 0:
-            # Проверяем логи на "Done"
-            logs = get_logs(client, server_name, lines=1)
-            if "Done" in logs:
-                return True
-            else:
-                return False
-
-    # 2. Fallback: поиск процесса Java по имени
-    ps_cmd = f"ps aux | grep -v grep | grep 'java.*server.jar' | grep '{server_dir}' | wc -l"
-    out3, err3, code3 = execute_command(client, ps_cmd, timeout=5)
-    if code3 == 0 and int(out3.strip()) > 0:
-        logs = get_logs(client, server_name, lines=1)
-        if "Done" in logs:
-            return True
-        else:
-            return False
-
+        return True
+    # Проверка процесса Java
+    username = client._transport.get_username()
+    ps_cmd = f"ps aux | grep -v grep | grep 'java.*server.jar' | grep '/home/{username}/minecraft_servers/{server_name}' | wc -l"
+    out2, err2, code2 = execute_command(client, ps_cmd, timeout=5)
+    if code2 == 0 and int(out2.strip()) > 0:
+        return True
     return False
 
 def get_status(client, server_name):
@@ -629,107 +572,83 @@ def get_status(client, server_name):
         else:
             return 'not_deployed'
 
-def start_server_via_nohup(client, server_name, password, java_path="java"):
-    ensure_java_installed(client, password, get_required_java_version("1.20.4"))
-    ensure_rcon_installed(client, password)
+def start_server_via_screen(client, server_name, password, java_path="java"):
+    ensure_screen_installed(client, password)
+    ensure_java_installed(client, password, get_required_java_version("1.20.4"))  # можно передавать версию
     username = client._transport.get_username()
     server_dir = f"/home/{username}/minecraft_servers/{server_name}"
-    pid_file = f"{server_dir}/server.pid"
+    cmd = f"screen -dmS mc-{server_name} bash {server_dir}/start.sh"
+    execute_command(client, cmd)
 
-    # Проверяем, не запущен ли уже
     if is_server_running(client, server_name):
         return True
 
-    # Проверяем наличие server.jar
     jar_check = f"test -f {server_dir}/server.jar"
     _, _, code = execute_command(client, jar_check, timeout=10)
     if code != 0:
         raise Exception("server.jar not found")
 
-    # Удаляем session.lock, если существует (избегаем ошибки "already locked")
-    world_dir = f"{server_dir}/world"
-    lock_file = f"{world_dir}/session.lock"
-    # Проверяем существование мира и lock-файла
-    check_world = f"test -d {world_dir}"
-    _, _, code_world = execute_command(client, check_world, timeout=5)
-    if code_world == 0:
-        # Проверяем наличие lock-файла и удаляем его
-        check_lock = f"test -f {lock_file}"
-        _, _, code_lock = execute_command(client, check_lock, timeout=5)
-        if code_lock == 0:
-            execute_command(client, f"rm -f {lock_file}", timeout=5)
-            print(f"Removed session.lock for {server_name}")
+    # Удаляем session.lock (если есть)
+    lock_file = f"{server_dir}/world/session.lock"
+    execute_command(client, f"rm -f {lock_file}", timeout=5)
 
-    # Запускаем с nohup
-    cmd = f"cd {server_dir} && nohup {java_path} -Xmx1024M -Xms1024M -jar server.jar nogui > server.log 2>&1 & echo $! > {pid_file}"
+    # Запускаем через screen
+    cmd = f"screen -dmS mc-{server_name} bash -c 'cd {server_dir} && {java_path} -Xmx1024M -Xms1024M -jar server.jar nogui'"
     out, err, code = execute_command(client, cmd, timeout=30)
     if code != 0:
-        raise Exception(f"Start command failed: {err}")
+        raise Exception(f"Screen start failed: {err}")
 
-    # Ждём готовности (появление "Done" в логах)
+    # Проверяем, создалась ли сессия
+    time.sleep(3)
+    screen_check, _, _ = execute_command(client, f"screen -ls | grep 'mc-{server_name}'", timeout=5)
+    if not screen_check.strip():
+        # Fallback: попробуем через /usr/bin/screen
+        fallback_cmd = f"/usr/bin/screen -dmS mc-{server_name} /bin/bash -c 'cd {server_dir} && {java_path} -Xmx1024M -Xms1024M -jar server.jar nogui'"
+        out2, err2, code2 = execute_command(client, fallback_cmd, timeout=30)
+        if code2 != 0:
+            raise Exception(f"Fallback screen start failed: {err2}")
+        time.sleep(3)
+        screen_check2, _, _ = execute_command(client, f"screen -ls | grep 'mc-{server_name}'", timeout=5)
+        if not screen_check2.strip():
+            raise Exception("Screen session not created even with fallback")
+
+    # Ждём готовности сервера
     if not wait_for_server(client, server_name, timeout=120):
-        log_check = execute_command(client, f"tail -n 30 {server_dir}/server.log", timeout=10)
-        raise Exception(f"Server not ready. Logs:\n{log_check[0]}")
+        logs = get_logs(client, server_name, lines=30)
+        raise Exception(f"Server not ready. Logs:\n{logs}")
+
     return True
 
 def stop_server(client, server_name):
+    # Отправляем stop через screen
     try:
         send_command(client, server_name, "stop")
-        time.sleep(3)
+        time.sleep(5)
     except:
         pass
-    username = client._transport.get_username()
-    pid_file = f"/home/{username}/minecraft_servers/{server_name}/server.pid"
-    out, err, code = execute_command(client, f"cat {pid_file} 2>/dev/null", timeout=5)
-    if code == 0 and out.strip():
-        pid = out.strip()
-        execute_command(client, f"kill -15 {pid} 2>/dev/null", timeout=5)
-        time.sleep(2)
-        execute_command(client, f"kill -9 {pid} 2>/dev/null", timeout=5)
+    # Принудительно убиваем screen и процессы
+    execute_command(client, f"screen -S mc-{server_name} -X quit", timeout=5)
     execute_command(client, f"pkill -f 'java.*{server_name}.*server.jar'", timeout=5)
-    execute_command(client, f"rm -f {pid_file}", timeout=5)
     return True
 
-def restart_server(client, server_name, password, java_path="java"):
+def restart_server(client, server_name, password, server):
     stop_server(client, server_name)
     time.sleep(2)
-    return start_server_via_nohup(client, server_name, password, java_path)
+    return start_server_via_screen(client, server.name, password, server.java_path if hasattr(server, 'java_path') else "java")
 
 def delete_server(client, server_name):
     stop_server(client, server_name)
-    execute_command(client, f"rm -rf ~/minecraft_servers/{server_name}")
+    execute_command(client, f"rm -rf ~/minecraft_servers/{server_name}", timeout=30)
     return True
 
-def wait_for_server(client, server_name, timeout=120):
-    """
-    Ожидает, пока сервер не запустится и не появится строка "Done".
-    """
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        # Проверяем процесс
-        if is_server_running(client, server_name):
-            # Проверяем логи на "Done"
-            logs = get_logs(client, server_name, lines=3)
-            if "Done" in logs:
-                return True
-        time.sleep(3)
-    return False
-
-# ---------- Отправка команд через RCON ----------
 def send_command(client, server_name, command):
-    rcon_port = 25575
-    rcon_password = "admin123"
-    try:
-        ensure_rcon_installed(client)
-    except:
-        pass
-    cmd = f"mcrcon -H localhost -P {rcon_port} -p {rcon_password} '{command}'"
-    out, err, code = execute_command(client, cmd, timeout=5)
-    if code == 0:
-        return True
-    raise Exception(f"RCON command failed: {err}")
+    # Отправляем команду через screen
+    cmd = f"screen -S mc-{server_name} -p 0 -X stuff '{command}\\015'"
+    out, err, code = execute_command(client, cmd, timeout=10)
+    if code != 0:
+        raise Exception(f"Failed to send command: {err}")
+    return True
 
-# ---------- Логи ----------
 def get_logs(client, server_name, lines=50):
     username = client._transport.get_username()
     server_dir = f"/home/{username}/minecraft_servers/{server_name}"
@@ -743,6 +662,33 @@ def get_logs(client, server_name, lines=50):
         cmd = f"tail -n {lines} {alt} 2>/dev/null || echo 'Log file not found'"
     out, err, code = execute_command(client, cmd, timeout=10)
     return out
+
+def wait_for_server(client, server_name, timeout=120):
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        if is_server_running(client, server_name):
+            logs = get_logs(client, server_name, lines=3)
+            if "Done" in logs:
+                return True
+        time.sleep(3)
+    return False
+
+def create_start_script(client, server_dir, java_path="java", ram="1024M"):
+    script = f"""#!/bin/bash
+cd {server_dir}
+{java_path} -Xmx{ram} -Xms{ram} -jar server.jar nogui
+"""
+    with tempfile.NamedTemporaryFile(mode='w', newline='\n', delete=False, suffix='.sh') as tmp:
+        tmp.write(script)
+        tmp_path = tmp.name
+    try:
+        sftp = client.open_sftp()
+        sftp.put(tmp_path, f"{server_dir}/start.sh")
+        sftp.close()
+    finally:
+        os.remove(tmp_path)
+    execute_command(client, f"chmod +x {server_dir}/start.sh")
+    return True
 
 # ---------- Бэкапы ----------
 def create_backup(client, server_name):
@@ -779,16 +725,15 @@ def restore_backup(client, server_name, backup_name):
     server_dir = f"/home/{client._transport.get_username()}/minecraft_servers/{server_name}"
     backup_path = f"{server_dir}/backups/{backup_name}"
     stop_server(client, server_name)
-    execute_command(client, f"find {server_dir} -mindepth 1 -maxdepth 1 ! -name 'backups' -exec rm -rf {{}} +")
+    execute_command(client, f"find {server_dir} -mindepth 1 -maxdepth 1 ! -name 'backups' -exec rm -rf {{}} +", timeout=30)
     execute_command(client, f"unzip -o {backup_path} -d {server_dir}", timeout=30)
-    # Удаляем session.lock, если он появился после восстановления
-    lock_file = f"{server_dir}/world/session.lock"
-    execute_command(client, f"rm -f {lock_file}", timeout=5)
+    # Удаляем session.lock
+    execute_command(client, f"rm -f {server_dir}/world/session.lock", timeout=5)
     return True
 
 def install_plugin(client, server_name, plugin_url, plugin_name):
     plugins_dir = f"/home/{client._transport.get_username()}/minecraft_servers/{server_name}/plugins"
-    execute_command(client, f"mkdir -p {plugins_dir}")
+    execute_command(client, f"mkdir -p {plugins_dir}", timeout=10)
     cmd = f"wget -O {plugins_dir}/{plugin_name} {plugin_url}"
     execute_command(client, cmd, timeout=30)
     return True
@@ -799,7 +744,7 @@ def install_modrinth_project(client, server_name, project_id, version_id, projec
         raise ValueError("project_type must be 'mod' or 'plugin'")
     base_dir = f"/home/{client._transport.get_username()}/minecraft_servers/{server_name}"
     target_dir = f"{base_dir}/mods" if project_type == 'mod' else f"{base_dir}/plugins"
-    execute_command(client, f"mkdir -p {target_dir}")
+    execute_command(client, f"mkdir -p {target_dir}", timeout=10)
 
     url = f"https://api.modrinth.com/v2/version/{version_id}"
     resp = requests.get(url)
@@ -822,17 +767,15 @@ def install_modrinth_project(client, server_name, project_id, version_id, projec
 
 # ---------- Развертывание сервера (deploy) ----------
 def deploy_minecraft_server(client, server_name, server_type, mc_version, password):
-    # Определяем требуемую версию Java и устанавливаем
     required_java = get_required_java_version(mc_version)
     java_path = ensure_java_installed(client, password, required_java)
+    ensure_screen_installed(client, password)
 
-    ensure_rcon_installed(client, password)
     username = client._transport.get_username()
     base_dir = f"/home/{username}/minecraft_servers"
     server_dir = f"{base_dir}/{server_name}"
     execute_command(client, f"mkdir -p {server_dir}")
 
-    # Скачивание JAR
     jar_url = get_jar_url(server_type, mc_version)
     if not jar_url:
         raise Exception(f"No JAR URL found for {server_type} {mc_version}")
@@ -855,7 +798,7 @@ def deploy_minecraft_server(client, server_name, server_type, mc_version, passwo
     # eula.txt
     execute_command(client, f"echo 'eula=true' > {server_dir}/eula.txt")
 
-    # server.properties с RCON
+    # server.properties (без RCON)
     properties_content = """#Minecraft server properties
 enable-jmx-monitoring=false
 rcon.port=25575
@@ -887,8 +830,7 @@ server-ip=
 resource-pack-prompt=
 allow-nether=true
 server-port=25565
-enable-rcon=true
-rcon.password=admin123
+enable-rcon=false
 sync-chunk-writes=true
 op-permission-level=4
 prevent-proxy-connections=false
@@ -896,6 +838,7 @@ resource-pack=
 hide-online-players=false
 entity-broadcast-range-percentage=100
 simulation-distance=10
+rcon.password=
 player-idle-timeout=0
 debug=false
 force-gamemode=false
@@ -924,7 +867,7 @@ max-world-size=29999984
     finally:
         os.remove(tmp_path)
 
-    # Автоматически находим свободный порт
+    # Проверяем порт
     props = read_server_properties(client, server_name)
     current_port = int(props.get('server-port', 25565))
     if not is_port_free(client, current_port):
@@ -932,8 +875,8 @@ max-world-size=29999984
         props['server-port'] = str(new_port)
         write_server_properties(client, server_name, props)
 
-    # Запускаем через nohup с нужной Java
-    start_server_via_nohup(client, server_name, password, java_path)
+    # Запускаем через screen
+    start_server_via_screen(client, server_name, password, java_path)
 
     return True
 
@@ -941,7 +884,6 @@ max-world-size=29999984
 def get_system_stats(client):
     stats = {'cpu_percent': 0.0, 'ram_total_mb': 0, 'ram_used_mb': 0, 'ram_percent': 0.0}
     try:
-        # CPU
         out, err, code = execute_command(client, "mpstat 1 1 | tail -n1 | awk '{print 100 - $NF}'", timeout=3)
         if code == 0 and out.strip():
             cpu = float(out.strip())
@@ -953,7 +895,6 @@ def get_system_stats(client):
                 cpu = 0.0
         stats['cpu_percent'] = round(cpu, 1)
 
-        # RAM
         out_ram, err_ram, code_ram = execute_command(client, "free -m | grep Mem | awk '{print $2, $3}'", timeout=2)
         if code_ram == 0 and out_ram.strip():
             parts = out_ram.strip().split()
@@ -963,6 +904,29 @@ def get_system_stats(client):
                 stats['ram_total_mb'] = total
                 stats['ram_used_mb'] = used
                 stats['ram_percent'] = round((used / total) * 100, 1) if total > 0 else 0.0
-    except Exception as e:
+    except Exception:
         pass
     return stats
+
+# ---------- Дополнительно: удаление мира ----------
+def delete_world(client, server_name):
+    username = client._transport.get_username()
+    server_dir = f"/home/{username}/minecraft_servers/{server_name}"
+    world_dir = f"{server_dir}/world"
+    check_cmd = f"test -d {world_dir}"
+    _, _, code = execute_command(client, check_cmd, timeout=5)
+    if code == 0:
+        execute_command(client, f"rm -rf {world_dir}", timeout=30)
+        return True
+    return False
+
+def delete_plugins(client, server_name):
+    username = client._transport.get_username()
+    server_dir = f"/home/{username}/minecraft_servers/{server_name}"
+    plugins_dir = f"{server_dir}/plugins"
+    check_cmd = f"test -d {plugins_dir}"
+    _, _, code = execute_command(client, check_cmd, timeout=5)
+    if code == 0:
+        execute_command(client, f"rm -rf {plugins_dir}", timeout=30)
+        return True
+    return False
