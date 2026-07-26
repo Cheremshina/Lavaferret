@@ -57,6 +57,7 @@ versions = {
 # ------------------------------------------------------------
 # Инициализация приложения
 # ------------------------------------------------------------
+
 app = Flask(__name__)
 app.config.from_object(Config)
 
@@ -270,7 +271,7 @@ def start_server_route(server_id):
     try:
         password = server.get_password()
         client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, password)
-        start_server_via_screen(client, server.name, password, server.java_path if hasattr(server, 'java_path') else "java")
+        start_server_with_screen(client, server.name, password, server.java_path if hasattr(server, 'java_path') else "java")
         client.close()
         server.status = 'running'
         db.session.commit()
@@ -448,7 +449,7 @@ def delete_file(server_id):
         abort(400)
     try:
         client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
-        delete_file_or_directory(client, server.name, file_path)
+        delete_file(client, server.name, file_path)
         client.close()
         return '', 200
     except Exception as e:
