@@ -36,7 +36,7 @@
                                 <a href="{{ url_for('edit_file', server_id=server.id, path=(path + '/' + f.name) if path else f.name) }}" class="btn btn-sm btn-outline-warning">✏️ Редактировать</a>
                                 <a href="{{ url_for('download_file', server_id=server.id, file=(path + '/' + f.name) if path else f.name) }}" class="btn btn-sm btn-outline-primary">Скачать</a>
                             {% endif %}
-                            <a href="#" class="btn btn-sm btn-outline-danger" onclick="if(confirm('Удалить?')){ fetch('{{ url_for('delete_file', server_id=server.id) }}?file={{ (path + '/' + f.name) if path else f.name }}', {method:'POST'}).then(()=>location.reload()) }">Удалить</a>
+                            <a href="#" class="btn btn-sm btn-outline-danger" onclick="if(confirm('Удалить?')){ fetch('{{ url_for('delete_file_route', server_id=server.id) }}?file={{ (path + '/' + f.name) if path else f.name }}', {method:'POST'}).then(()=>location.reload()) }">Удалить</a>
                         </td>
                     </tr>
                     {% endif %}

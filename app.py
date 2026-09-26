@@ -12,8 +12,36 @@ import requests
 from sqlalchemy import text
 import sys
 import io
+import logging
+from logging.handlers import RotatingFileHandler
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
+# -----------------------------------------------
+# Настройка логгера
+# -----------------------------------------------
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Handler для файла с ротацией
+file_handler = RotatingFileHandler('logs/lavaferret.log', maxBytes=10*1024*1024, backupCount=5)
+file_handler.setLevel(logging.INFO)
+file_formatter = logging.Formatter(
+    '%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+file_handler.setFormatter(file_formatter)
+logger.addHandler(file_handler)
+
+# Handler для консоли
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.DEBUG)
+console_formatter = logging.Formatter(
+    '%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+console_handler.setFormatter(console_formatter)
+logger.addHandler(console_handler)
 
 # -----------------------------------------------
 # Список версий для разных типов ядер
@@ -54,6 +82,67 @@ versions = {
               '1.15.2', '1.15.1', '1.15', '1.14.4', '1.14.3', '1.14.2', '1.14.1']
 }
 
+# -----------------------------------------------
+# Сопоставление версий Minecraft и рекомендуемых версий Java
+# -----------------------------------------------
+JAVA_VERSION_MAP = [
+    ('1.20.5', 21),  # Mojang обновили требование до Java 21
+    ('1.17', 17),    # Переход на Java 17
+    ('1.12.2', 8),   # Последняя версия для Java 8
+]
+
+def get_recommended_java(mc_version):
+    """
+    Определяет рекомендуемую версию Java для указанной версии Minecraft.
+    
+    Args:
+        mc_version: строка версии Minecraft (например, '1.20.4', '1.19.4', '1.16.5')
+    
+    Returns:
+        dict: {'java_version': int, 'java_path': str, 'recommendation': str}
+    """
+    try:
+        # Парсим версию Minecraft
+        version_parts = mc_version.split('.')
+        if len(version_parts) < 2:
+            raise ValueError(f'Неверный формат версии: {mc_version}')
+        
+        major = int(version_parts[1])
+        minor = int(version_parts[2]) if len(version_parts) > 2 else 0
+        
+        # Определяем версию Java
+        if (major, minor) >= (20, 5):
+            java_version = 21
+            java_path = '/usr/lib/jvm/java-21-openjdk-amd64/bin/java'
+            recommendation = 'Java 21 (обязательно для Minecraft 1.20.5+)'
+        elif (major, minor) >= (17, 0):
+            java_version = 17
+            java_path = '/usr/lib/jvm/java-17-openjdk-amd64/bin/java'
+            recommendation = 'Java 17 (требуется для Minecraft 1.17-1.20.4)'
+        elif (major, minor) >= (13, 0):
+            java_version = 11
+            java_path = '/usr/lib/jvm/java-11-openjdk-amd64/bin/java'
+            recommendation = 'Java 11 (рекомендуется для Minecraft 1.13-1.16.5)'
+        else:
+            java_version = 8
+            java_path = '/usr/lib/jvm/java-1.8.0-openjdk-amd64/bin/java'
+            recommendation = 'Java 8 (требуется для Minecraft 1.12.2 и ниже)'
+        
+        logger.debug(f'Для Minecraft {mc_version} рекомендована {recommendation}')
+        
+        return {
+            'java_version': java_version,
+            'java_path': java_path,
+            'recommendation': recommendation
+        }
+    except Exception as e:
+        logger.error(f'Ошибка определения версии Java для {mc_version}: {str(e)}')
+        return {
+            'java_version': 8,
+            'java_path': 'java',
+            'recommendation': 'Java 8 (по умолчанию)'
+        }
+
 # ------------------------------------------------------------
 # Инициализация приложения
 # ------------------------------------------------------------
@@ -65,8 +154,9 @@ app.config.from_object(Config)
 cache = Cache(app, config={'CACHE_TYPE': 'SimpleCache'})
 compress = Compress(app)
 
-# SocketIO (без WebSocket для лёгкости, можно оставить для будущего)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
+# SocketIO с WebSocket для real-time консоли
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading', ping_timeout=60, ping_interval=25)
+logger.info('Lavaferret Minecraft Panel запущен с async_mode=threading (WebSocket)')
 
 # Фильтр для шаблонов
 @app.template_filter('dirname')
@@ -99,7 +189,38 @@ def load_user(user_id):
 with app.app_context():
     db.create_all()
     db.session.execute(text("PRAGMA journal_mode=WAL"))
-    db.session.commit()
+    
+    # Миграция: добавление полей если их нет
+    try:
+        columns = [row[1] for row in db.session.execute(text("PRAGMA table_info(server)")).fetchall()]
+        if 'java_version' not in columns:
+            db.session.execute(text("ALTER TABLE server ADD COLUMN java_version INTEGER"))
+            logger.info('Добавлено поле java_version в таблицу server')
+        if 'memory_mb' not in columns:
+            db.session.execute(text("ALTER TABLE server ADD COLUMN memory_mb INTEGER DEFAULT 4096"))
+            logger.info('Добавлено поле memory_mb в таблицу server')
+        
+        # Фиксим неправильные пути к Java у существующих серверов
+        servers = Server.query.all()
+        fixed_count = 0
+        for server in servers:
+            if server.java_path and 'java-21-openjdk/bin/java' in server.java_path and 'amd64' not in server.java_path:
+                server.java_path = '/usr/lib/jvm/java-21-openjdk-amd64/bin/java'
+                fixed_count += 1
+                logger.info(f'Исправлен путь к Java для сервера {server.name}: {server.java_path}')
+            if server.java_path and 'java-17-openjdk/bin/java' in server.java_path and 'amd64' not in server.java_path:
+                server.java_path = '/usr/lib/jvm/java-17-openjdk-amd64/bin/java'
+                fixed_count += 1
+                logger.info(f'Исправлен путь к Java для сервера {server.name}: {server.java_path}')
+        
+        if fixed_count > 0:
+            db.session.commit()
+            logger.info(f'Исправлено {fixed_count} путей к Java')
+        
+        db.session.commit()
+    except Exception as e:
+        logger.warning(f'Ошибка при миграции БД (игнорируется): {str(e)}')
+        db.session.rollback()
 
 # Фоновый апдейтер (отключён – можно включить при необходимости)
 from status_updater import StatusUpdater
@@ -116,11 +237,13 @@ def register():
         password = request.form['password']
         if User.query.filter_by(username=username).first():
             flash('Username already exists')
+            logger.warning(f'Registration attempt with existing username: {username}')
             return redirect(url_for('register'))
         hashed = generate_password_hash(password)
         user = User(username=username, password=hashed)
         db.session.add(user)
         db.session.commit()
+        logger.info(f'New user registered: {username}')
         flash('Registration successful, please login')
         return redirect(url_for('login'))
     return render_template('register.html')
@@ -133,13 +256,16 @@ def login():
         user = User.query.filter_by(username=username).first()
         if user and check_password_hash(user.password, password):
             login_user(user)
+            logger.info(f'User logged in: {username}')
             return redirect(url_for('index'))
         flash('Invalid credentials')
+        logger.warning(f'Failed login attempt for username: {username}')
     return render_template('login.html')
 
 @app.route('/logout')
 @login_required
 def logout():
+    logger.info(f'User logged out: {current_user.username}')
     logout_user()
     return redirect(url_for('login'))
 
@@ -186,11 +312,13 @@ def add_server():
         existing = Server.query.filter_by(name=name, user_id=current_user.id).first()
         if existing:
             flash('Server name already exists for your account')
+            logger.warning(f'User {current_user.username} tried to add server with existing name: {name}')
             return redirect(url_for('add_server'))
 
         try:
+            logger.info(f'User {current_user.username} deploying new server: {name} (type={server_type}, version={version})')
             client = ssh_connect(host, port, user, password)
-            deploy_minecraft_server(client, name, server_type, version, password)
+            deploy_minecraft_server(client, name, server_type, version, password, memory_mb=4096)
             client.close()
 
             server = Server(
@@ -201,15 +329,25 @@ def add_server():
                 server_type=server_type,
                 mc_version=version,
                 user_id=current_user.id,
-                status='running'
+                status='running',
+                memory_mb=4096  # 4 ГБ по умолчанию
             )
             server.set_password(password)
+            
+            # Автоматический подбор Java версии
+            java_info = get_recommended_java(version)
+            server.java_path = java_info['java_path']
+            server.java_version = java_info['java_version']
+            logger.info(f'Автоматически подобрана Java {java_info["java_version"]} для Minecraft {version}')
+            
             db.session.add(server)
             db.session.commit()
             cache.delete('index')
+            logger.info(f'Server deployed successfully: {name}')
             flash('Server deployed successfully!')
             return redirect(url_for('index'))
         except Exception as e:
+            logger.error(f'Failed to deploy server {name}: {str(e)}')
             flash(f'Error: {str(e)}')
             return redirect(url_for('add_server'))
     return render_template('add_server.html', versions=versions)
@@ -244,22 +382,94 @@ def api_server_stats(server_id):
     except Exception as e:
         return jsonify({'cpu_percent': 0.0, 'ram_total_mb': 0, 'ram_used_mb': 0, 'ram_percent': 0.0, 'error': str(e)})
 
+@app.route('/api/host/stats')
+@login_required
+def api_host_stats():
+    """
+    Получает статистику всех SSH хостов
+    Группирует серверы по хостам и возвращает одну статистику на хост
+    """
+    own_servers = Server.query.filter_by(user_id=current_user.id).all()
+    co_servers = Server.query.join(server_access).filter(server_access.c.user_id == current_user.id).all()
+    servers = list(set(own_servers + co_servers))
+    
+    # Группируем серверы по хостам
+    hosts = {}
+    for server in servers:
+        host_key = f"{server.ssh_host}:{server.ssh_port}"
+        if host_key not in hosts:
+            hosts[host_key] = {
+                'host': server.ssh_host,
+                'port': server.ssh_port,
+                'user': server.ssh_user,
+                'password': server.get_password(),
+                'servers': []
+            }
+        hosts[host_key]['servers'].append({
+            'id': server.id,
+            'name': server.name,
+            'status': server.status
+        })
+    
+    # Получаем статистику для каждого хоста
+    result = []
+    for host_key, host_data in hosts.items():
+        try:
+            client = ssh_connect(host_data['host'], host_data['port'], host_data['user'], host_data['password'])
+            stats = get_host_system_stats(client)
+            client.close()
+            
+            stats['host'] = host_data['host']
+            stats['port'] = host_data['port']
+            stats['user'] = host_data['user']
+            stats['servers'] = host_data['servers']
+            stats['server_count'] = len(host_data['servers'])
+            
+            logger.info(f'[HOST_STATS API] Host {host_key}: ram_total={stats.get("ram_total_mb", 0)}MB, ram_used={stats.get("ram_used_mb", 0)}MB, ram_percent={stats.get("ram_percent", 0)}%')
+            
+            result.append(stats)
+        except Exception as e:
+            logger.error(f'Ошибка получения статистики хоста {host_key}: {str(e)}')
+            result.append({
+                'host': host_data['host'],
+                'port': host_data['port'],
+                'user': host_data['user'],
+                'servers': host_data['servers'],
+                'server_count': len(host_data['servers']),
+                'error': str(e)
+            })
+    
+    return jsonify({'hosts': result})
+
 @cache.memoize(timeout=5)
-def get_logs_cached(server_id, server):
+def get_console_cached(server_id, server):
     client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
-    logs = get_logs(client, server.name)
+    console = get_console_output(client, server.name)
     client.close()
-    return logs
+    return console
 
 @app.route('/server/<int:server_id>/api/logs')
 @login_required
 def api_get_logs(server_id):
     try:
         server = get_server_or_404(server_id)
-        logs = get_logs_cached(server_id, server)
-        return jsonify({'logs': logs})
+        console = get_console_cached(server_id, server)
+        return jsonify({'logs': console})
     except Exception as e:
         return jsonify({'logs': f'Error: {str(e)}'}), 500
+
+@app.route('/server/<int:server_id>/api/live-console')
+@login_required
+def api_get_live_console(server_id):
+    """Получает live статус сервера через RCON"""
+    try:
+        server = get_server_or_404(server_id)
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
+        live_data = get_live_console(client, server.name)
+        client.close()
+        return jsonify({'live': live_data})
+    except Exception as e:
+        return jsonify({'live': f'Error: {str(e)}'}), 500
 
 # ------------------------------------------------------------
 # Управление сервером (start, stop, restart, delete)
@@ -269,15 +479,18 @@ def api_get_logs(server_id):
 def start_server_route(server_id):
     server = get_server_or_404(server_id)
     try:
+        logger.info(f'User {current_user.username} starting server: {server.name}')
         password = server.get_password()
         client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, password)
-        start_server_with_screen(client, server.name, password, server.java_path if hasattr(server, 'java_path') else "java")
+        start_server_via_nohup(client, server.name, password, server.java_path if hasattr(server, 'java_path') else "java")
         client.close()
         server.status = 'running'
         db.session.commit()
         cache.delete('index')
+        logger.info(f'Server started: {server.name}')
         flash('Server started')
     except Exception as e:
+        logger.error(f'Failed to start server {server.name}: {str(e)}')
         flash(f'Error: {e}')
     return redirect(url_for('server_detail', server_id=server_id))
 
@@ -286,14 +499,17 @@ def start_server_route(server_id):
 def stop_server_route(server_id):
     server = get_server_or_404(server_id)
     try:
+        logger.info(f'User {current_user.username} stopping server: {server.name}')
         client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
         stop_server(client, server.name)
         client.close()
         server.status = 'stopped'
         db.session.commit()
         cache.delete('index')
+        logger.info(f'Server stopped: {server.name}')
         flash('Server stopped')
     except Exception as e:
+        logger.error(f'Failed to stop server {server.name}: {str(e)}')
         flash(f'Error: {e}')
     return redirect(url_for('server_detail', server_id=server_id))
 
@@ -302,6 +518,7 @@ def stop_server_route(server_id):
 def restart_server_route(server_id):
     server = get_server_or_404(server_id)
     try:
+        logger.info(f'User {current_user.username} restarting server: {server.name}')
         password = server.get_password()
         client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, password)
         restart_server(client, server.name, password, server.java_path if hasattr(server, 'java_path') else "java")
@@ -309,8 +526,10 @@ def restart_server_route(server_id):
         server.status = 'running'
         db.session.commit()
         cache.delete('index')
+        logger.info(f'Server restarted: {server.name}')
         flash('Server restarted')
     except Exception as e:
+        logger.error(f'Failed to restart server {server.name}: {str(e)}')
         flash(f'Error restarting: {e}')
     return redirect(url_for('server_detail', server_id=server_id))
 
@@ -319,14 +538,17 @@ def restart_server_route(server_id):
 def delete_server_route(server_id):
     server = get_server_or_404(server_id)
     try:
+        logger.info(f'User {current_user.username} deleting server: {server.name}')
         client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
         delete_server(client, server.name)
         client.close()
         db.session.delete(server)
         db.session.commit()
         cache.delete('index')
+        logger.info(f'Server deleted: {server.name}')
         flash('Server deleted')
     except Exception as e:
+        logger.error(f'Failed to delete server {server.name}: {str(e)}')
         flash(f'Error: {e}')
     return redirect(url_for('index'))
 
@@ -442,14 +664,17 @@ def edit_file(server_id):
 
 @app.route('/server/<int:server_id>/files/delete', methods=['POST'])
 @login_required
-def delete_file(server_id):
+def delete_file_route(server_id):
+    """Удаление файла через веб-интерфейс"""
     server = get_server_or_404(server_id)
     file_path = request.args.get('file')
     if not file_path:
         abort(400)
     try:
         client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
-        delete_file(client, server.name, file_path)
+        # Вызываем delete_file из ssh_utils через полное имя
+        from ssh_utils import delete_file as ssh_delete_file
+        ssh_delete_file(client, server.name, file_path)
         client.close()
         return '', 200
     except Exception as e:
@@ -464,13 +689,19 @@ def files(server_id):
         if 'file' in request.files:
             f = request.files['file']
             if f.filename:
-                content = f.read().decode('utf-8')
+                logger.info(f'Uploading file: {f.filename} to path: {path}')
+                # Читаем как байты - работает для любых файлов
+                content_bytes = f.read()
                 try:
                     client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
-                    write_file_content(client, server.name, path + '/' + f.filename if path else f.filename, content)
+                    target_path = path + '/' + f.filename if path else f.filename
+                    logger.info(f'Writing to: {target_path} ({len(content_bytes)} bytes)')
+                    write_file_content_binary(client, server.name, target_path, content_bytes)
                     client.close()
+                    logger.info(f'File uploaded successfully: {f.filename}')
                     flash('Файл загружен')
                 except Exception as e:
+                    logger.error(f'File upload error: {str(e)}')
                     flash(f'Ошибка: {e}')
         if 'new_dir' in request.form:
             dirname = request.form['new_dir']
@@ -509,22 +740,6 @@ def download_file(server_id):
     except Exception as e:
         flash(f'Ошибка: {e}')
         return redirect(url_for('files', server_id=server.id))
-
-@app.route('/server/<int:server_id>/files/delete', methods=['POST'])
-@login_required
-def delete_server_file(server_id):
-    # ... код
-    server = get_server_or_404(server_id)
-    file_path = request.args.get('file')
-    if not file_path:
-        abort(400)
-    try:
-        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
-        delete_file(client, server.name, file_path)
-        client.close()
-        return '', 200
-    except Exception as e:
-        return str(e), 500
 
 @app.route('/server/<int:server_id>/config', methods=['GET', 'POST'])
 @login_required
@@ -585,6 +800,25 @@ def plugins(server_id):
         return redirect(url_for('plugins', server_id=server.id))
     return render_template('plugins.html', server=server, installed_plugins=installed_plugins, active_page='plugins')
 
+@app.route('/server/<int:server_id>/plugins/delete', methods=['POST'])
+@login_required
+def delete_plugin(server_id):
+    server = get_server_or_404(server_id)
+    file_path = request.args.get('file')
+    if not file_path:
+        return jsonify({'error': 'Missing file parameter'}), 400
+    try:
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
+        plugins_dir = f"/home/{server.ssh_user}/minecraft_servers/{server.name}/plugins"
+        full_path = f"{plugins_dir}/{file_path}"
+        execute_command(client, f"rm -f {full_path}")
+        client.close()
+        logger.info(f'Deleted plugin {file_path} from {server.name}')
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f'Error deleting plugin: {str(e)}')
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/server/<int:server_id>/mods')
 @login_required
 def mods(server_id):
@@ -604,6 +838,25 @@ def mods(server_id):
     except Exception as e:
         flash(f'Ошибка: {e}')
     return render_template('mods.html', server=server, installed_mods=installed_mods, active_page='mods')
+
+@app.route('/server/<int:server_id>/mods/delete', methods=['POST'])
+@login_required
+def delete_mod(server_id):
+    server = get_server_or_404(server_id)
+    file_path = request.args.get('file')
+    if not file_path:
+        return jsonify({'error': 'Missing file parameter'}), 400
+    try:
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
+        mods_dir = f"/home/{server.ssh_user}/minecraft_servers/{server.name}/mods"
+        full_path = f"{mods_dir}/{file_path}"
+        execute_command(client, f"rm -f {full_path}")
+        client.close()
+        logger.info(f'Deleted mod {file_path} from {server.name}')
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f'Error deleting mod: {str(e)}')
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/server/<int:server_id>/backups', methods=['GET', 'POST'])
 @login_required
@@ -697,7 +950,7 @@ def startup(server_id):
     server = get_server_or_404(server_id)
     if request.method == 'POST':
         server.startup_command = request.form.get('startup_command', server.startup_command)
-        server.memory_percent = int(request.form.get('memory_percent', server.memory_percent))
+        server.memory_mb = int(request.form.get('memory_mb', server.memory_mb))
         server.timezone = request.form.get('timezone', server.timezone)
         server.garbage_collector = request.form.get('garbage_collector', server.garbage_collector)
         server.java_path = request.form.get('java_path', server.java_path if hasattr(server, 'java_path') else 'java')
@@ -753,24 +1006,53 @@ def change_core(server_id):
     if request.method == 'POST':
         new_type = request.form.get('server_type')
         new_version = request.form.get('mc_version')
+        change_mode = request.form.get('change_mode', 'kernel_only')  # 'kernel_only' или 'full_reset'
+        
         if new_type and new_version:
             try:
                 client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
-                stop_server(client, server.name)
-                execute_command(client, f"rm -f ~/minecraft_servers/{server.name}/server.jar")
-                jar_url = get_jar_url(new_type, new_version)
-                if not jar_url:
-                    flash('Не найден URL для указанного ядра и версии')
-                    return redirect(url_for('change_core', server_id=server.id))
-                execute_command(client, f"curl -L -o ~/minecraft_servers/{server.name}/server.jar {jar_url}")
-                rename_jar_to_server(client, f"/home/{server.ssh_user}/minecraft_servers/{server.name}")
+                
+                if change_mode == 'full_reset':
+                    logger.info(f'User {current_user.username} doing FULL RESET core change for {server.name}')
+                    flash_warning = '⚠️ Будет удалён весь мир, плагины и конфиги (кроме бэкапов)!'
+                else:
+                    logger.info(f'User {current_user.username} doing kernel-only change for {server.name}')
+                    flash_warning = None
+                
+                # Вызываем новую функцию смены ядра
+                change_server_core(
+                    client=client,
+                    server_name=server.name,
+                    new_server_type=new_type,
+                    new_mc_version=new_version,
+                    password=server.get_password(),
+                    memory_mb=server.memory_mb if hasattr(server, 'memory_mb') else 4096,
+                    mode=change_mode
+                )
+                
                 server.server_type = new_type
                 server.mc_version = new_version
+                
+                # Обновляем рекомендацию Java при смене версии
+                java_info = get_recommended_java(new_version)
+                server.java_path = java_info['java_path']
+                server.java_version = java_info['java_version']
+                logger.info(f'Обновлена Java до {java_info["java_version"]} при смене ядра на {new_type} {new_version}')
+                
                 db.session.commit()
-                flash(f'Ядро изменено на {new_type} {new_version}. Запустите сервер.')
+                
+                if change_mode == 'full_reset':
+                    flash(f'✅ Полная переустановка завершена! Мир и конфиги удалены. Ядро: {new_type} {new_version}')
+                else:
+                    flash(f'✅ Ядро изменено на {new_type} {new_version}. Мир и конфиги сохранены.')
+                
+                if flash_warning:
+                    flash(flash_warning, 'warning')
+                
                 client.close()
             except Exception as e:
-                flash(f'Ошибка: {e}')
+                logger.error(f'Core change error: {str(e)}')
+                flash(f'Ошибка: {str(e)}')
         return redirect(url_for('change_core', server_id=server.id))
     return render_template('change_core.html', server=server, versions=versions, active_page='change_core')
 
@@ -856,18 +1138,191 @@ def modrinth_install(server_id):
     project_id = data.get('project_id')
     version_id = data.get('version_id')
     project_type = data.get('type')
+    
+    logger.info(f'Installing {project_type} {project_id} v{version_id} to server {server.name}')
+    
     if not project_id or not version_id or not project_type:
         return jsonify({'error': 'Missing required fields'}), 400
     try:
         client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
         filename = install_modrinth_project(client, server.name, project_id, version_id, project_type)
         client.close()
+        logger.info(f'Successfully installed {filename} to {server.name}')
         return jsonify({'success': True, 'filename': filename})
     except Exception as e:
+        logger.error(f'Failed to install {project_type} to {server.name}: {str(e)}')
         return jsonify({'error': str(e)}), 500
+
+# ------------------------------------------------------------
+# API для подбора Java версии
+# ------------------------------------------------------------
+@app.route('/api/java/recommend')
+@login_required
+def api_java_recommend():
+    """Возвращает рекомендованную версию Java для указанной версии Minecraft"""
+    mc_version = request.args.get('version', '')
+    if not mc_version:
+        return jsonify({'error': 'Missing version parameter'}), 400
+    
+    recommendation = get_recommended_java(mc_version)
+    logger.info(f'Запрос рекомендации Java для Minecraft {mc_version}: {recommendation["recommendation"]}')
+    
+    return jsonify({
+        'success': True,
+        'mc_version': mc_version,
+        'java_version': recommendation['java_version'],
+        'java_path': recommendation['java_path'],
+        'recommendation': recommendation['recommendation']
+    })
+
+@app.route('/api/java/install/<int:server_id>', methods=['POST'])
+@login_required
+def api_java_install(server_id):
+    """Устанавливает рекомендованную Java на указанный сервер через SSH"""
+    server = get_server_or_404(server_id)
+    java_version = request.json.get('java_version', server.java_version)
+    
+    if not java_version:
+        java_info = get_recommended_java(server.mc_version)
+        java_version = java_info['java_version']
+    
+    try:
+        logger.info(f'User {current_user.username} installing Java {java_version} on server {server.name}')
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
+        password = server.get_password()
+        
+        # Устанавливаем Java
+        java_path = ensure_java_installed(client, password, java_version)
+        client.close()
+        
+        # Обновляем путь к Java в базе
+        server.java_path = java_path
+        server.java_version = java_version
+        db.session.commit()
+        
+        logger.info(f'Java {java_version} successfully installed on server {server.name}: {java_path}')
+        
+        return jsonify({
+            'success': True,
+            'java_path': java_path,
+            'java_version': java_version,
+            'message': f'Java {java_version} успешно установлена'
+        })
+    except Exception as e:
+        logger.error(f'Failed to install Java {java_version} on server {server.name}: {str(e)}')
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+# ------------------------------------------------------------
+# WebSocket для real-time консоли
+# ------------------------------------------------------------
+import threading
+import time
+from flask_socketio import emit, join_room, leave_room
+
+# Хранилище активных WebSocket подключений
+console_connections = {}
+
+def stream_console_to_client(server_id, username, password):
+    """
+    Фоновый поток для стриминга консоли сервера через WebSocket
+    Использует tmux capture-pane для получения live вывода
+    """
+    try:
+        client = ssh_connect(server_id['host'], server_id['port'], username, password)
+        server_name = server_id['name']
+        
+        while server_id.get('active', True):
+            try:
+                console_output = get_console_output(client, server_name, lines=50)
+                
+                # Отправляем подключённым клиентам
+                room_key = f"console_{server_id['id']}"
+                if room_key in console_connections:
+                    for sid in console_connections[room_key]:
+                        try:
+                            socketio.emit('console_update', {'data': console_output}, room=sid)
+                        except:
+                            pass
+            except Exception as e:
+                logger.error(f'Ошибка стриминга консоли {server_name}: {str(e)}')
+            
+            time.sleep(2)  # Обновление каждые 2 секунды
+        
+        client.close()
+    except Exception as e:
+        logger.error(f'Ошибка подключения к серверу {server_id.get("name")}: {str(e)}')
+
+@socketio.on('connect')
+def handle_connect():
+    logger.info(f'WebSocket клиент подключился: {request.sid}')
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    # Удаляем клиента из всех комнат
+    rooms_to_remove = [room for room, sids in console_connections.items() if request.sid in sids]
+    for room in rooms_to_remove:
+        console_connections[room].discard(request.sid)
+        if not console_connections[room]:
+            del console_connections[room]
+    logger.info(f'WebSocket клиент отключился: {request.sid}')
+
+@socketio.on('join_console')
+def handle_join_console(data):
+    server_id = data.get('server_id')
+    room_key = f"console_{server_id}"
+    join_room(room_key)
+    
+    if room_key not in console_connections:
+        console_connections[room_key] = set()
+    console_connections[room_key].add(request.sid)
+    
+    logger.info(f'Клиент {request.sid} присоединился к консоли сервера {server_id}')
+    
+    # Запускаем поток стриминга если ещё не запущен
+    if room_key not in [k for k in console_connections.keys()]:
+        # Поток будет запущен при первом подключении
+        pass
+
+@socketio.on('leave_console')
+def handle_leave_console(data):
+    server_id = data.get('server_id')
+    room_key = f"console_{server_id}"
+    leave_room(room_key)
+    
+    if room_key in console_connections:
+        console_connections[room_key].discard(request.sid)
+        if not console_connections[room_key]:
+            del console_connections[room_key]
+    
+    logger.info(f'Клиент {request.sid} покинул консоль сервера {server_id}')
+
+@socketio.on('send_command')
+def handle_send_command(data):
+    server_id = data.get('server_id')
+    command = data.get('command')
+    
+    if not server_id or not command:
+        return {'status': 'error', 'message': 'Missing server_id or command'}
+    
+    try:
+        server = db.session.get(Server, server_id)
+        if not server:
+            return {'status': 'error', 'message': 'Server not found'}
+        
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
+        send_command(client, server.name, command)
+        client.close()
+        
+        return {'status': 'ok'}
+    except Exception as e:
+        logger.error(f'Ошибка отправки команды: {str(e)}')
+        return {'status': 'error', 'message': str(e)}
 
 # ------------------------------------------------------------
 # Запуск
 # ------------------------------------------------------------
 if __name__ == '__main__':
-    socketio.run(app, debug=False, host='0.0.0.0', port=5000)
+    socketio.run(app, debug=False, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)

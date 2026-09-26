@@ -2,16 +2,39 @@
 {% block title %}Строка запуска – {{ server.name }}{% endblock %}
 {% block content %}
 <h2>Настройка строки запуска</h2>
+
+{% if server.java_version %}
+<div class="card mb-3 border-success">
+    <div class="card-body">
+        <div class="d-flex align-items-center">
+            <i class="bi bi-journal-code text-success fs-4 me-2"></i>
+            <div>
+                <strong>Рекомендуемая Java:</strong> 
+                <span class="badge bg-success">Java {{ server.java_version }}</span>
+                <small class="text-muted ms-2">
+                    (для Minecraft {{ server.mc_version }})
+                </small>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <div class="card">
     <div class="card-body">
         <form method="post">
             <div class="mb-2">
-                <label class="form-label">Команда запуска</label>
-                <textarea name="startup_command" class="form-control" rows="3">{{ server.startup_command }}</textarea>
+                <label class="form-label">Количество RAM</label>
+                <div class="input-group">
+                    <input type="number" name="memory_mb" value="{{ server.memory_mb or 4096 }}" class="form-control" min="512" max="65536" step="256">
+                    <span class="input-group-text">МБ</span>
+                </div>
+                <small class="text-muted">Рекомендуется: 4096 МБ (4 ГБ) для Minecraft 1.20+, 2048 МБ (2 ГБ) для старых версий</small>
             </div>
             <div class="mb-2">
-                <label class="form-label">Максимальный % памяти</label>
-                <input type="number" name="memory_percent" value="{{ server.memory_percent }}" class="form-control" min="50" max="100">
+                <label class="form-label">Команда запуска</label>
+                <textarea name="startup_command" id="startup-command" class="form-control" rows="3">{{ server.startup_command }}</textarea>
+                <small class="text-muted">Команда будет автоматически обновлена при изменении RAM</small>
             </div>
             <div class="mb-2">
                 <label class="form-label">Временная зона</label>
@@ -26,31 +49,143 @@
     </div>
 </div>
 
-<div class="mb-2">
-    <label class="form-label">Путь к Java</label>
-    <input type="text" name="java_path" value="{{ server.java_path or 'java' }}" class="form-control" placeholder="Например: /usr/lib/jvm/java-17-openjdk-amd64/bin/java">
-    <small class="text-muted">Оставьте 'java' для использования системной Java. Для автоматического выбора версии используйте кнопку ниже.</small>
-</div>
-<div class="mb-2">
-    <button type="button" class="btn btn-secondary btn-sm" id="detect-java">Определить оптимальную Java</button>
-    <span id="java-suggestion"></span>
+<div class="card mt-3">
+    <div class="card-body">
+        <h5 class="card-title">Настройки Java</h5>
+        
+        <div class="mb-2">
+            <label class="form-label">Путь к Java</label>
+            <input type="text" name="java_path" id="java-path" value="{{ server.java_path or 'java' }}" class="form-control" placeholder="Например: /usr/lib/jvm/java-17-openjdk/bin/java">
+            <small class="text-muted">Оставьте 'java' для использования системной Java по умолчанию</small>
+        </div>
+        
+        <div class="mb-2">
+            <label class="form-label">Версия Minecraft</label>
+            <input type="text" id="mc-version" value="{{ server.mc_version }}" class="form-control" readonly>
+        </div>
+        
+        <div class="mb-2">
+            <button type="button" class="btn btn-outline-primary btn-sm" id="detect-java">
+                <i class="bi bi-magic"></i> Определить оптимальную Java
+            </button>
+            <span id="java-suggestion" class="ms-2"></span>
+        </div>
+        
+        <div class="mt-3 pt-3 border-top">
+            <h6 class="text-muted mb-2">Автоматическая установка</h6>
+            <button type="button" class="btn btn-success btn-sm" id="install-java">
+                <i class="bi bi-download"></i> Установить Java автоматически на сервер
+            </button>
+            <span id="install-status" class="ms-2"></span>
+            <br>
+            <small class="text-muted">Это скачает и установит нужную версию Java на ваш VPS</small>
+        </div>
+    </div>
 </div>
 
-<a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-secondary">Назад</a>
+<a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-secondary mt-3">Назад</a>
 
 <script>
+    const serverId = {{ server.id }};
+    
+    // Автоматическое обновление команды запуска при изменении RAM
+    const memoryInput = document.querySelector('input[name="memory_mb"]');
+    const startupCommand = document.getElementById('startup-command');
+    
+    function updateStartupCommand() {
+        const memoryMb = memoryInput.value || 4096;
+        const javaPath = document.getElementById('java-path').value || 'java';
+        const gc = document.querySelector('input[name="garbage_collector"]').value || 'UseSerialGC';
+        
+        // Формируем новую команду запуска
+        const newCommand = `${javaPath} -Xms${memoryMb}M -Xmx${memoryMb}M -XX:+${gc} -jar server.jar nogui`;
+        startupCommand.value = newCommand;
+    }
+    
+    memoryInput.addEventListener('input', updateStartupCommand);
+    
+    // Обновление при изменении сборщика мусора
+    document.querySelector('input[name="garbage_collector"]').addEventListener('input', updateStartupCommand);
+    
+    // Инициализация при загрузке
+    updateStartupCommand();
+    
+    // Определение оптимальной Java
     document.getElementById('detect-java').addEventListener('click', function() {
-        const version = document.querySelector('select[name="mc_version"]').value;
-        fetch(`/api/detect_java/${serverId}?version=${version}`)
+        const version = document.getElementById('mc-version').value;
+        const suggestionEl = document.getElementById('java-suggestion');
+        const javaPathInput = document.getElementById('java-path');
+        
+        if (!version) {
+            suggestionEl.innerHTML = '<span class="text-warning">Версия не указана</span>';
+            return;
+        }
+        
+        suggestionEl.innerHTML = '<span class="text-info"><i class="bi bi-hourglass-split"></i> Определение...</span>';
+        
+        fetch(`/api/java/recommend?version=${encodeURIComponent(version)}`)
             .then(res => res.json())
             .then(data => {
-                if (data.java_path) {
-                    document.querySelector('input[name="java_path"]').value = data.java_path;
-                    document.getElementById('java-suggestion').textContent = '✓ Рекомендуемая Java: ' + data.java_path;
+                if (data.success) {
+                    javaPathInput.value = data.java_path;
+                    suggestionEl.innerHTML = `<span class="text-success"><i class="bi bi-check-circle"></i> ${data.recommendation}</span>`;
+                    
+                    // Показываем подсказку с путем
+                    setTimeout(() => {
+                        if (data.java_path !== 'java') {
+                            suggestionEl.innerHTML += `<br><small class="text-muted">Путь: ${data.java_path}</small>`;
+                        }
+                    }, 100);
                 } else {
-                    document.getElementById('java-suggestion').textContent = 'Не удалось определить Java';
+                    suggestionEl.innerHTML = `<span class="text-danger"><i class="bi bi-exclamation-circle"></i> ${data.error || 'Ошибка определения'}</span>`;
                 }
+            })
+            .catch(err => {
+                console.error('Error:', err);
+                suggestionEl.innerHTML = '<span class="text-danger"><i class="bi bi-exclamation-circle"></i> Ошибка соединения</span>';
             });
+    });
+    
+    // Автоматическая установка Java
+    document.getElementById('install-java').addEventListener('click', function() {
+        const installBtn = this;
+        const statusEl = document.getElementById('install-status');
+        const javaVersion = {{ server.java_version or 17 }};
+        
+        installBtn.disabled = true;
+        installBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Установка...';
+        statusEl.innerHTML = '<span class="text-info">Пожалуйста, подождите, это может занять 2-5 минут...</span>';
+        
+        fetch(`/api/java/install/${serverId}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ java_version: javaVersion })
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                document.getElementById('java-path').value = data.java_path;
+                statusEl.innerHTML = `<span class="text-success"><i class="bi bi-check-circle"></i> ${data.message} (${data.java_path})</span>`;
+                
+                // Обновляем бейдж рекомендации
+                const badgeContainer = document.querySelector('.border-success');
+                if (badgeContainer) {
+                    badgeContainer.querySelector('.badge').textContent = `Java ${data.java_version}`;
+                }
+            } else {
+                statusEl.innerHTML = `<span class="text-danger"><i class="bi bi-exclamation-circle"></i> ${data.error}</span>`;
+            }
+            installBtn.disabled = false;
+            installBtn.innerHTML = '<i class="bi bi-download"></i> Установить Java автоматически на сервер';
+        })
+        .catch(err => {
+            console.error('Error:', err);
+            statusEl.innerHTML = '<span class="text-danger"><i class="bi bi-exclamation-circle"></i> Ошибка соединения</span>';
+            installBtn.disabled = false;
+            installBtn.innerHTML = '<i class="bi bi-download"></i> Установить Java автоматически на сервер';
+        });
     });
 </script>
 {% endblock %}

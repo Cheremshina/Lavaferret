@@ -31,9 +31,11 @@ class Server(db.Model):
     status = db.Column(db.String(20), default='offline')
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     java_path = db.Column(db.String(255), default="java")
+    java_version = db.Column(db.Integer, nullable=True)  # Рекомендуемая версия Java (8, 11, 17, 21)
 
     # Дополнительные поля
     startup_command = db.Column(db.Text, default="java -Xms128M -Xmx1024M -jar server.jar nogui")
+    memory_mb = db.Column(db.Integer, default=4096)  # Количество RAM в МБ (по умолчанию 4 ГБ)
     memory_percent = db.Column(db.Integer, default=95)
     timezone = db.Column(db.String(50), default="Europe/Moscow")
     garbage_collector = db.Column(db.String(50), default="UseSerialGC")

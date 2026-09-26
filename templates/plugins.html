@@ -4,12 +4,20 @@
 <h2>Плагины сервера {{ server.name }}</h2>
 
 <div class="card mb-3">
-    <div class="card-header">Установленные плагины</div>
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span>Установленные плагины</span>
+        <span class="badge bg-primary">{{ installed_plugins|length }}</span>
+    </div>
     <div class="card-body">
         {% if installed_plugins %}
         <ul class="list-group list-group-flush bg-transparent">
             {% for p in installed_plugins %}
-            <li class="list-group-item bg-transparent text-light">{{ p }}</li>
+            <li class="list-group-item bg-transparent text-light d-flex justify-content-between align-items-center">
+                <span>🔌 {{ p }}</span>
+                <button class="btn btn-sm btn-outline-danger" onclick="deletePlugin('{{ p }}')">
+                    <i class="bi bi-trash"></i> Удалить
+                </button>
+            </li>
             {% endfor %}
         </ul>
         {% else %}
@@ -138,6 +146,24 @@
     const serverId = {{ server.id }};
     let currentProjectId = null;
     let currentProjectType = 'plugin';
+
+    function deletePlugin(pluginName) {
+        if (!confirm(`Удалить плагин ${pluginName}?`)) return;
+        
+        fetch(`/server/${serverId}/plugins/delete?file=${encodeURIComponent(pluginName)}`, {
+            method: 'POST'
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                alert('Плагин удалён');
+                location.reload();
+            } else {
+                alert('Ошибка удаления: ' + (data.error || 'неизвестная ошибка'));
+            }
+        })
+        .catch(err => alert('Ошибка соединения: ' + err));
+    }
 
     function installPlugin(projectId) {
         currentProjectId = projectId;

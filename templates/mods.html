@@ -4,12 +4,20 @@
 <h2>Моды сервера {{ server.name }}</h2>
 
 <div class="card mb-3">
-    <div class="card-header">Установленные моды</div>
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span>Установленные моды</span>
+        <span class="badge bg-primary">{{ installed_mods|length }}</span>
+    </div>
     <div class="card-body">
         {% if installed_mods %}
         <ul class="list-group list-group-flush bg-transparent">
             {% for m in installed_mods %}
-            <li class="list-group-item bg-transparent text-light">{{ m }}</li>
+            <li class="list-group-item bg-transparent text-light d-flex justify-content-between align-items-center">
+                <span>📦 {{ m }}</span>
+                <button class="btn btn-sm btn-outline-danger" onclick="deleteMod('{{ m }}')">
+                    <i class="bi bi-trash"></i> Удалить
+                </button>
+            </li>
             {% endfor %}
         </ul>
         {% else %}
@@ -148,6 +156,24 @@
     const serverId = {{ server.id }};
     let currentProjectId = null;
     let currentProjectType = 'mod';
+
+    function deleteMod(modName) {
+        if (!confirm(`Удалить мод ${modName}?`)) return;
+        
+        fetch(`/server/${serverId}/mods/delete?file=${encodeURIComponent(modName)}`, {
+            method: 'POST'
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                alert('Мод удалён');
+                location.reload();
+            } else {
+                alert('Ошибка удаления: ' + (data.error || 'неизвестная ошибка'));
+            }
+        })
+        .catch(err => alert('Ошибка соединения: ' + err));
+    }
 
     function installMod(projectId, type) {
         currentProjectId = projectId;

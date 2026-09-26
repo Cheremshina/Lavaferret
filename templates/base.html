@@ -5,8 +5,31 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Minecraft Panel</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    
+    <!-- SVG градиенты для круговых индикаторов -->
+    <svg class="svg-gradients">
+        <defs>
+            <linearGradient id="gradientGreen" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" style="stop-color:#11998e;stop-opacity:1" />
+                <stop offset="100%" style="stop-color:#38ef7d;stop-opacity:1" />
+            </linearGradient>
+            <linearGradient id="gradientOrange" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" style="stop-color:#f093fb;stop-opacity:1" />
+                <stop offset="100%" style="stop-color:#f5576c;stop-opacity:1" />
+            </linearGradient>
+            <linearGradient id="gradientRed" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" style="stop-color:#fa709a;stop-opacity:1" />
+                <stop offset="100%" style="stop-color:#fee140;stop-opacity:1" />
+            </linearGradient>
+        </defs>
+    </svg>
 </head>
 <body>
 
@@ -17,7 +40,6 @@
             {% if current_user.is_authenticated %}
                 {% if server %}
                     <a class="nav-link {% if request.endpoint == 'server_detail' %}active{% endif %}" href="{{ url_for('server_detail', server_id=server.id) }}">📋 Сервер</a>
-                    <a class="nav-link {% if request.endpoint == 'console' %}active{% endif %}" href="{{ url_for('console', server_id=server.id) }}">🖥️ Консоль</a>
                     <a class="nav-link {% if request.endpoint == 'players' %}active{% endif %}" href="{{ url_for('players', server_id=server.id) }}">👥 Игроки</a>
                     <a class="nav-link {% if request.endpoint == 'files' %}active{% endif %}" href="{{ url_for('files', server_id=server.id) }}">📁 Файлы</a>
                     <a class="nav-link {% if request.endpoint == 'config' %}active{% endif %}" href="{{ url_for('config', server_id=server.id) }}">⚙️ Конфиг</a>
@@ -71,39 +93,378 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
 
 <script>
-    // Функция обновления статистики для всех серверов на главной
+    // ============================================
+    // Оптимизированное обновление статистики
+    // ============================================
+    
+    // Кэш для последних данных
+    const statsCache = {};
+    const UPDATE_INTERVAL = 10000; // 10 секунд для снижения нагрузки
+    let updateTimer = null;
+    
+    // Debounce функция для предотвращения лишних запросов
+    function debounce(func, wait) {
+        let timeout;
+        return function executedFunction(...args) {
+            const later = () => {
+                clearTimeout(timeout);
+                func(...args);
+            };
+            clearTimeout(timeout);
+            timeout = setTimeout(later, wait);
+        };
+    }
+    
+    // Константы для SVG кругов
+    const CIRCUMFERENCE = 2 * Math.PI * 45; // ~282.74
+    
+    // Анимация кругового прогресса
+    function animateCircularProgress(circleElement, percent, duration = 1000) {
+        const clampedPercent = Math.min(Math.max(percent, 0), 100);
+        const offset = CIRCUMFERENCE - (clampedPercent / 100) * CIRCUMFERENCE;
+        
+        const startTime = performance.now();
+        const startOffset = parseFloat(circleElement.getAttribute('data-start-offset')) || CIRCUMFERENCE;
+        
+        circleElement.setAttribute('data-start-offset', startOffset);
+        
+        function update(currentTime) {
+            const elapsed = currentTime - startTime;
+            const progress = Math.min(elapsed / duration, 1);
+            
+            // Easing function
+            const eased = progress < 0.5 
+                ? 2 * progress * progress 
+                : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+            
+            const currentOffset = startOffset + (offset - startOffset) * eased;
+            circleElement.setAttribute('stroke-dashoffset', currentOffset);
+            
+            if (progress < 1) {
+                requestAnimationFrame(update);
+            }
+        }
+        
+        requestAnimationFrame(update);
+    }
+    
+    // Получение класса цвета
+    function getColorClass(percent) {
+        if (percent > 90) return 'high';
+        if (percent > 60) return 'medium';
+        return 'low';
+    }
+    
+    // Обновление статистики CPU
+    function updateCPU(serverId, cpuPercent) {
+        const cpuValue = document.getElementById(`cpu-value-${serverId}`);
+        const cpuCircle = document.querySelector(`#cpu-circle-${serverId} .progress-circle`);
+        
+        if (cpuValue) {
+            cpuValue.textContent = cpuPercent.toFixed(1);
+            
+            // Цвет значения
+            const colorMap = {
+                'low': '#38ef7d',
+                'medium': '#f5576c',
+                'high': '#fee140'
+            };
+            cpuValue.style.color = colorMap[getColorClass(cpuPercent)] || '#e8eaff';
+        }
+        
+        if (cpuCircle) {
+            const colorClass = getColorClass(cpuPercent);
+            cpuCircle.classList.remove('low', 'medium', 'high');
+            cpuCircle.classList.add(colorClass);
+            
+            animateCircularProgress(cpuCircle, cpuPercent);
+        }
+    }
+    
+    // Обновление статистики RAM
+    function updateRAM(serverId, ramUsed, ramTotal, ramPercent) {
+        const ramValue = document.getElementById(`ram-value-${serverId}`);
+        const ramCircle = document.querySelector(`#ram-circle-${serverId} .progress-circle`);
+        
+        if (ramValue) {
+            ramValue.textContent = ramPercent.toFixed(1);
+            
+            // Цвет значения
+            const colorMap = {
+                'low': '#38ef7d',
+                'medium': '#f5576c',
+                'high': '#fee140'
+            };
+            ramValue.style.color = colorMap[getColorClass(ramPercent)] || '#e8eaff';
+        }
+        
+        if (ramCircle) {
+            const colorClass = getColorClass(ramPercent);
+            ramCircle.classList.remove('low', 'medium', 'high');
+            ramCircle.classList.add(colorClass);
+            
+            animateCircularProgress(ramCircle, ramPercent);
+        }
+        
+        // Обновление текста RAM
+        const ramUsedEl = document.getElementById(`ram-used-${serverId}`);
+        const ramTotalEl = document.getElementById(`ram-total-${serverId}`);
+        if (ramUsedEl) ramUsedEl.textContent = ramUsed;
+        if (ramTotalEl) ramTotalEl.textContent = ramTotal;
+    }
+    
+    // Основная функция обновления статистики
     function updateAllStats() {
         const cards = document.querySelectorAll('.server-card');
+        
         cards.forEach(card => {
             const link = card.querySelector('a[href*="/server/"]');
             if (!link) return;
+            
             const serverId = link.getAttribute('href').split('/')[2];
+            
+            // Проверка кэша для предотвращения лишних запросов
+            if (statsCache[serverId] && 
+                (Date.now() - statsCache[serverId].timestamp) < UPDATE_INTERVAL * 0.8) {
+                return; // Пропускаем, если данные ещё актуальны
+            }
+            
             fetch(`/api/server/${serverId}/stats`)
                 .then(res => res.json())
                 .then(data => {
-                    if (data.error) return;
-                    // Обновляем CPU
-                    const cpuSpan = document.getElementById(`cpu-${serverId}`);
-                    const cpuBar = document.getElementById(`cpu-bar-${serverId}`);
-                    if (cpuSpan) cpuSpan.textContent = (data.cpu_percent || 0).toFixed(1);
-                    if (cpuBar) cpuBar.style.width = Math.min(data.cpu_percent || 0, 100) + '%';
-                    // Обновляем RAM
-                    const ramUsed = document.getElementById(`ram-used-${serverId}`);
-                    const ramTotal = document.getElementById(`ram-total-${serverId}`);
-                    const ramPercent = document.getElementById(`ram-percent-${serverId}`);
-                    const ramBar = document.getElementById(`ram-bar-${serverId}`);
-                    if (ramUsed) ramUsed.textContent = data.ram_used_mb || 0;
-                    if (ramTotal) ramTotal.textContent = data.ram_total_mb || 0;
-                    if (ramPercent) ramPercent.textContent = (data.ram_percent || 0).toFixed(1);
-                    if (ramBar) ramBar.style.width = Math.min(data.ram_percent || 0, 100) + '%';
+                    if (data.error || !data.cpu_percent) return;
+                    
+                    // Кэшируем данные
+                    statsCache[serverId] = {
+                        ...data,
+                        timestamp: Date.now()
+                    };
+                    
+                    updateCPU(serverId, data.cpu_percent || 0);
+                    updateRAM(
+                        serverId,
+                        data.ram_used_mb || 0,
+                        data.ram_total_mb || 0,
+                        data.ram_percent || 0
+                    );
                 })
-                .catch(() => {});
+                .catch(() => {
+                    // Ошибка на уровне консоли, не загромождаем UI
+                    console.warn(`Failed to fetch stats for server ${serverId}`);
+                });
         });
     }
-
-    // Запускаем обновление сразу и каждые 10 секунд
-    updateAllStats();
-    setInterval(updateAllStats, 10000);
+    
+    // Запускаем обновление
+    function startAutoUpdate() {
+        // Первичное обновление
+        updateAllStats();
+        
+        // Периодические обновления
+        updateTimer = setInterval(updateAllStats, UPDATE_INTERVAL);
+    }
+    
+    // Остановка обновления (когда вкладка неактивна)
+    function stopAutoUpdate() {
+        if (updateTimer) {
+            clearInterval(updateTimer);
+            updateTimer = null;
+        }
+    }
+    
+    // Автоматическая остановка при неактивной вкладке
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            stopAutoUpdate();
+        } else {
+            startAutoUpdate();
+        }
+    });
+    
+    // Запуск при загрузке страницы
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startAutoUpdate);
+    } else {
+        startAutoUpdate();
+    }
+    
+    // ============================================
+    // Улучшенные alert сообщения
+    // ============================================
+    
+    // Автоматическое скрытие alert через 5 секунд
+    document.addEventListener('DOMContentLoaded', () => {
+        const alerts = document.querySelectorAll('.alert');
+        alerts.forEach(alert => {
+            setTimeout(() => {
+                alert.style.transition = 'opacity 0.5s ease, transform 0.5s ease';
+                alert.style.opacity = '0';
+                alert.style.transform = 'translateY(-20px)';
+                setTimeout(() => alert.remove(), 500);
+            }, 5000);
+        });
+    });
+    
+    // ============================================
+    // Системная нагрузка хостов
+    // ============================================
+    
+    // Загрузка статистики хостов
+    function loadHostStats() {
+        fetch('/api/host/stats')
+            .then(res => res.json())
+            .then(data => {
+                renderHostStats(data.hosts || []);
+            })
+            .catch(err => {
+                console.error('Ошибка загрузки статистики хостов:', err);
+            });
+    }
+    
+    // Отображение статистики хостов
+    function renderHostStats(hosts) {
+        const container = document.getElementById('host-stats-container');
+        if (!container) return;
+        
+        if (!hosts || hosts.length === 0) {
+            container.innerHTML = '';
+            return;
+        }
+        
+        let html = '<div class="row g-3">';
+        
+        hosts.forEach(host => {
+            const cpuPercent = host.cpu_percent || 0;
+            const ramPercent = host.ram_percent || 0;
+            const diskPercent = host.disk_percent || 0;
+            
+            // Определяем цвета
+            const getCpuColor = (p) => p > 90 ? 'danger' : p > 70 ? 'warning' : 'success';
+            const getRamColor = (p) => p > 90 ? 'danger' : p > 70 ? 'warning' : 'info';
+            const getDiskColor = (p) => p > 90 ? 'danger' : p > 80 ? 'warning' : 'secondary';
+            
+            html += `
+                <div class="col-12 col-lg-6">
+                    <div class="card host-card shadow-hover">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <div class="d-flex align-items-center gap-2">
+                                <i class="bi bi-hdd-rack" style="color: #667eea;"></i>
+                                <strong>SSH Хост</strong>
+                            </div>
+                            <span class="badge bg-primary">${host.server_count || 0} серверов</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-3">
+                                <!-- CPU -->
+                                <div class="col-4">
+                                    <div class="text-center">
+                                        <div class="mb-1">
+                                            <span class="text-muted" style="font-size: 0.75rem;">CPU</span>
+                                        </div>
+                                        <div class="host-meter ${getCpuColor(cpuPercent)}" style="width: 80px; height: 80px; margin: 0 auto;">
+                                            <div class="host-meter-bg"></div>
+                                            <div class="host-meter-fill" style="--percent: ${cpuPercent};"></div>
+                                            <div class="host-meter-value">${cpuPercent}%</div>
+                                        </div>
+                                        <small class="text-muted d-block mt-1">${host.load_avg ? host.load_avg['1min'].toFixed(2) : '0.00'}</small>
+                                    </div>
+                                </div>
+                                
+                                <!-- RAM -->
+                                <div class="col-4">
+                                    <div class="text-center">
+                                        <div class="mb-1">
+                                            <span class="text-muted" style="font-size: 0.75rem;">RAM</span>
+                                        </div>
+                                        <div class="host-meter ${getRamColor(ramPercent)}" style="width: 80px; height: 80px; margin: 0 auto;">
+                                            <div class="host-meter-bg"></div>
+                                            <div class="host-meter-fill" style="--percent: ${ramPercent};"></div>
+                                            <div class="host-meter-value">${ramPercent}%</div>
+                                        </div>
+                                        <small class="text-muted d-block mt-1">${host.ram_used_mb || 0}/${host.ram_total_mb || 0} MB</small>
+                                    </div>
+                                </div>
+                                
+                                <!-- Disk -->
+                                <div class="col-4">
+                                    <div class="text-center">
+                                        <div class="mb-1">
+                                            <span class="text-muted" style="font-size: 0.75rem;">DISK</span>
+                                        </div>
+                                        <div class="host-meter ${getDiskColor(diskPercent)}" style="width: 80px; height: 80px; margin: 0 auto;">
+                                            <div class="host-meter-bg"></div>
+                                            <div class="host-meter-fill" style="--percent: ${diskPercent};"></div>
+                                            <div class="host-meter-value">${diskPercent}%</div>
+                                        </div>
+                                        <small class="text-muted d-block mt-1">${host.disk_used_gb || 0}/${host.disk_total_gb || 0} GB</small>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Дополнительная информация -->
+                            <div class="mt-3 pt-2" style="border-top: 1px solid var(--border-color);">
+                                <div class="row text-center" style="font-size: 0.8rem;">
+                                    <div class="col-4">
+                                        <i class="bi bi-cpu"></i>
+                                        <span class="text-muted">Процессов:</span> ${host.processes || 0}
+                                    </div>
+                                    <div class="col-4">
+                                        <i class="bi bi-clock"></i>
+                                        <span class="text-muted">Uptime:</span> ${host.uptime || 'N/A'}
+                                    </div>
+                                    <div class="col-4">
+                                        <i class="bi bi-hdd"></i>
+                                        <span class="text-muted">Host:</span> ${host.host || 'N/A'}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+        
+        html += '</div>';
+        container.innerHTML = html;
+    }
+    
+    // Обновление мини-баров на карточках серверов
+    function updateServerBars() {
+        const servers = document.querySelectorAll('.server-item');
+        servers.forEach(serverCard => {
+            const serverId = serverCard.querySelector('.server-card').getAttribute('onclick')?.match(/server_(\d+)/)?.[1];
+            if (!serverId) return;
+            
+            const cpuFill = document.getElementById(`cpu-fill-${serverId}`);
+            const ramFill = document.getElementById(`ram-fill-${serverId}`);
+            const cpuVal = document.getElementById(`cpu-val-${serverId}`);
+            const ramVal = document.getElementById(`ram-val-${serverId}`);
+            
+            if (cpuFill && cpuVal) {
+                const cpuPercent = parseFloat(cpuVal.textContent) || 0;
+                cpuFill.style.width = cpuPercent + '%';
+                cpuFill.className = 'mini-bar-fill cpu-fill ' + (cpuPercent > 90 ? 'high' : cpuPercent > 70 ? 'medium' : 'low');
+            }
+            
+            if (ramFill && ramVal) {
+                const ramPercent = parseFloat(ramVal.textContent) || 0;
+                ramFill.style.width = ramPercent + '%';
+                ramFill.className = 'mini-bar-fill ram-fill ' + (ramPercent > 90 ? 'high' : ramPercent > 70 ? 'medium' : 'low');
+            }
+        });
+    }
+    
+    // Загружаем статистику хостов при загрузке
+    document.addEventListener('DOMContentLoaded', () => {
+        loadHostStats();
+        updateServerBars();
+        
+        // Обновляем каждые 10 секунд
+        setInterval(() => {
+            loadHostStats();
+            updateServerBars();
+        }, 10000);
+    });
 </script>
 </body>
 </html>

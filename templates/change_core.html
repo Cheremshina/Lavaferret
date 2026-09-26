@@ -31,7 +31,32 @@
                     {% endfor %}
                 </select>
             </div>
-            <button type="submit" class="btn btn-warning" onclick="return confirm('Сменить ядро? Это остановит сервер и заменит server.jar.')">Сменить ядро</button>
+            
+            <hr>
+            
+            <div class="mb-3">
+                <label class="form-label d-block">Режим смены ядра:</label>
+                
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="radio" name="change_mode" id="mode_kernel" value="kernel_only" checked>
+                    <label class="form-check-label" for="mode_kernel">
+                        <strong>🔄 Только ядро (рекомендуется)</strong>
+                        <div class="text-muted small">Заменяет только server.jar. Мир, плагины, конфиги сохраняются.</div>
+                    </label>
+                </div>
+                
+                <div class="form-check">
+                    <input class="form-check-input" type="radio" name="change_mode" id="mode_full" value="full_reset">
+                    <label class="form-check-label" for="mode_full">
+                        <strong>⚠️ Полная переустановка</strong>
+                        <div class="text-muted small">Удаляет ВСЕ файлы (мир, плагины, конфиги), кроме бэкапов. Чистый сервер.</div>
+                    </label>
+                </div>
+            </div>
+            
+            <button type="submit" class="btn btn-warning" id="submitBtn" onclick="return confirmChange()">
+                Сменить ядро
+            </button>
         </form>
         <p class="text-muted mt-2">Сервер будет остановлен, ядро заменено, после чего вы можете запустить его снова.</p>
     </div>
@@ -51,5 +76,16 @@
             versionSelect.appendChild(opt);
         });
     });
+    
+    // Подтверждение смены ядра с учётом режима
+    function confirmChange() {
+        const mode = document.querySelector('input[name="change_mode"]:checked').value;
+        
+        if (mode === 'full_reset') {
+            return confirm('⚠️ ВНИМАНИЕ!\n\nБудет удалён:\n- Весь мир (мир, DIM1, DIM-1)\n- Все плагины и моды\n- Все конфиги\n- Все логи\n\nКроме папки backups!\n\nВы уверены?');
+        } else {
+            return confirm('Сменить ядро?\n\nБудет заменён только server.jar.\nМир и конфиги сохранятся.\n\nСервер будет остановлен.');
+        }
+    }
 </script>
 {% endblock %}

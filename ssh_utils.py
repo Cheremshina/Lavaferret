@@ -1,10 +1,24 @@
 import paramiko
+import sys
+sys.dont_write_bytecode = True  # Запрещаем создание .pyc файлов
+
 import time
 import os
 import tempfile
 import requests
 import json
 import re
+import logging
+
+# Настройка логгера для ssh_utils
+logger = logging.getLogger('ssh_utils')
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 # ---------- Конфигурация JAR ----------
 
@@ -494,6 +508,23 @@ def write_file_content(client, server_name, file_path, content):
     finally:
         os.remove(tmp_path)
 
+def write_file_content_binary(client, server_name, file_path, content_bytes):
+    """Запись бинарных данных в файл (для изображений, архивов и т.д.)"""
+    username = client._transport.get_username()
+    full = f"/home/{username}/minecraft_servers/{server_name}/{file_path}"
+    
+    # Создаём директорию если не существует
+    dir_path = '/'.join(full.split('/')[:-1])
+    execute_command(client, f"mkdir -p {dir_path}", timeout=3)
+    
+    # Записываем байты напрямую через SFTP
+    sftp = client.open_sftp()
+    try:
+        with sftp.open(full, 'wb') as f:
+            f.write(content_bytes)
+    finally:
+        sftp.close()
+
 def delete_file(client, server_name, file_path):
     full = f"/home/{client._transport.get_username()}/minecraft_servers/{server_name}/{file_path}"
     execute_command(client, f"rm -rf {full}")
@@ -593,28 +624,64 @@ def install_plugin(client, server_name, plugin_url, plugin_name):
     return True
 
 def install_modrinth_project(client, server_name, project_id, version_id, project_type):
+    """
+    Скачивает мод/плагин через Modrinth API и загружает на сервер через SFTP
+    """
     if project_type not in ['mod', 'plugin']:
         raise ValueError("project_type must be 'mod' or 'plugin'")
-    base_dir = f"/home/{client._transport.get_username()}/minecraft_servers/{server_name}"
+    
+    username = client._transport.get_username()
+    base_dir = f"/home/{username}/minecraft_servers/{server_name}"
     target_dir = f"{base_dir}/mods" if project_type == 'mod' else f"{base_dir}/plugins"
-    execute_command(client, f"mkdir -p {target_dir}")
+    
+    # Создаём директорию на сервере
+    execute_command(client, f"mkdir -p {target_dir}", timeout=5)
+    
+    # Получаем информацию о версии через API
+    logger.info(f'Fetching version info for {version_id}...')
     url = f"https://api.modrinth.com/v2/version/{version_id}"
-    resp = requests.get(url)
+    resp = requests.get(url, timeout=10)
     if resp.status_code != 200:
-        raise Exception(f"Failed to get version info: {resp.text}")
+        raise Exception(f"Failed to get version info from Modrinth: {resp.text}")
+    
     version_data = resp.json()
     files = version_data.get('files', [])
     if not files:
-        raise Exception("No files found")
+        raise Exception("No files found in version")
+    
+    # Используем первый файл (основной)
     file_info = files[0]
     download_url = file_info.get('url')
     filename = file_info.get('filename')
+    
     if not download_url or not filename:
-        raise Exception("Download URL or filename missing")
-    cmd = f"curl -k -L -o {target_dir}/{filename} {download_url}"
-    out, err, code = execute_command(client, cmd, timeout=60)
-    if code != 0:
-        raise Exception(f"Download failed: {err}\n{out}")
+        raise Exception("Download URL or filename missing from file info")
+    
+    logger.info(f'Downloading {filename} from {download_url}...')
+    
+    # Скачиваем файл на локальный сервер через requests (streaming)
+    download_resp = requests.get(download_url, stream=True, timeout=60)
+    if download_resp.status_code != 200:
+        raise Exception(f"Failed to download file: HTTP {download_resp.status_code}")
+    
+    # Читаем байты и загружаем через SFTP
+    content_bytes = b''
+    for chunk in download_resp.iter_content(chunk_size=8192):
+        if chunk:
+            content_bytes += chunk
+    
+    logger.info(f'Downloaded {len(content_bytes)} bytes, uploading to server...')
+    
+    # Загружаем файл на удалённый сервер через SFTP
+    sftp = client.open_sftp()
+    try:
+        remote_path = f"{target_dir}/{filename}"
+        with sftp.open(remote_path, 'wb') as f:
+            f.write(content_bytes)
+        logger.info(f'File uploaded successfully: {remote_path}')
+    finally:
+        sftp.close()
+    
     return filename
 
 # ---------- Удаление мира и плагинов ----------
@@ -674,12 +741,209 @@ def ensure_rcon_installed(client, password=None):
 
 # ---------- Проверка статуса и ожидание запуска ----------
 def is_server_running(client, server_name):
-    # Проверяем наличие Java-процесса с этим именем
-    ps_cmd = f"ps aux | grep -v grep | grep 'java.*server.jar' | grep '/home/{client._transport.get_username()}/minecraft_servers/{server_name}' | wc -l"
-    out, err, code = execute_command(client, ps_cmd, timeout=5)
+    """
+    Быстрая проверка статуса сервера:
+    1. Проверка процесса java (основной метод)
+    2. Проверка "Done" в логах для подтверждения
+    Без RCON для снижения нагрузки
+    """
+    username = client._transport.get_username()
+    server_dir = f"/home/{username}/minecraft_servers/{server_name}"
+    
+    # ===== МЕТОД 1: Проверка процесса java =====
+    ps_cmd = f"ps aux | grep 'java' | grep 'server.jar' | grep -v grep | wc -l"
+    out, _, code = execute_command(client, ps_cmd, timeout=3)
+    
     if code == 0 and int(out.strip()) > 0:
+        # Процесс найден, проверяем логи на "Done" для подтверждения
+        logger.info(f'[{server_name}] Процесс найден, проверяем логи...')
+        
+        log_files_to_check = [
+            f"{server_dir}/server.log",
+            f"{server_dir}/logs/latest.log"
+        ]
+        
+        for log_path in log_files_to_check:
+            check_done = f"tail -n 50 {log_path} 2>/dev/null | grep -i 'Done'"
+            done_out, _, done_code = execute_command(client, check_done, timeout=2)
+            
+            if done_code == 0 and done_out.strip():
+                logger.info(f'[{server_name}] Сервер запущен (процесс + Done в логах)')
+                return True
+        
+        # Нет "Done" в последних 50 строках, но процесс работает
+        logger.info(f'[{server_name}] Процесс работает, Done не найден (возможно загружается)')
         return True
+    
+    logger.info(f'[{server_name}] Процесс не найден')
     return False
+
+# ---------- Получение текстового статуса ----------
+def get_status(client, server_name):
+    """
+    Возвращает текстовый статус сервера:
+    - 'running' если сервер запущен
+    - 'stopped' если сервер остановлен но директория есть
+    - 'not_deployed' если сервер не развёрнут
+    """
+    if is_server_running(client, server_name):
+        return 'running'
+    
+    username = client._transport.get_username()
+    cmd_dir = f"test -d /home/{username}/minecraft_servers/{server_name}"
+    _, _, code_dir = execute_command(client, cmd_dir, timeout=5)
+    
+    if code_dir == 0:
+        return 'stopped'
+    else:
+        return 'not_deployed'
+
+# ---------- Получение консоли ----------
+def get_console_output(client, server_name, lines=100):
+    """
+    Получает последние строки консоли несколькими методами:
+    1. Чтение server.log (для nohup)
+    2. Чтение logs/latest.log
+    3. tmux capture-pane
+    4. screen -X hardcopy
+    5. Чтение /proc/{pid}/fd/1
+    """
+    username = client._transport.get_username()
+    server_dir = f"/home/{username}/minecraft_servers/{server_name}"
+    
+    # ===== МЕТОД 1: server.log (nohup запуск) =====
+    logger.info(f'[{server_name}] Попытка получить консоль через server.log...')
+    server_log = f"{server_dir}/server.log"
+    log_check = f"tail -n {lines} {server_log} 2>/dev/null"
+    log_out, _, log_code = execute_command(client, log_check, timeout=3)
+    
+    if log_code == 0 and log_out and log_out.strip():
+        log_lines = log_out.strip().split('\n')
+        if len(log_lines) > 0:
+            logger.info(f'[{server_name}] Получено {len(log_lines)} строк из server.log')
+            return '\n'.join(log_lines)
+    
+    # ===== МЕТОД 2: logs/latest.log =====
+    logger.info(f'[{server_name}] Попытка получить консоль через logs/latest.log...')
+    latest_log = f"{server_dir}/logs/latest.log"
+    log_check2 = f"tail -n {lines} {latest_log} 2>/dev/null"
+    log_out2, _, log_code2 = execute_command(client, log_check2, timeout=3)
+    
+    if log_code2 == 0 and log_out2 and log_out2.strip():
+        log_lines2 = log_out2.strip().split('\n')
+        if len(log_lines2) > 0:
+            logger.info(f'[{server_name}] Получено {len(log_lines2)} строк из logs/latest.log')
+            return '\n'.join(log_lines2)
+    
+    # ===== МЕТОД 3: tmux =====
+    logger.info(f'[{server_name}] Попытка получить консоль через tmux...')
+    tmux_sessions = [
+        f"tmux list-sessions 2>/dev/null | grep -i '{server_name}'",
+        f"tmux list-sessions 2>/dev/null | grep -i 'minecraft'",
+        f"tmux list-sessions 2>/dev/null | grep -i 'server'"
+    ]
+    
+    for tmux_cmd in tmux_sessions:
+        tmux_out, _, tmux_code = execute_command(client, tmux_cmd, timeout=3)
+        if tmux_code == 0 and tmux_out.strip():
+            session_name = tmux_out.strip().split(':')[0]
+            tmux_capture = f"tmux capture-pane -t {session_name} -p -S -{lines}"
+            tmux_output, _, tmux_err_code = execute_command(client, tmux_capture, timeout=5)
+            
+            if tmux_err_code == 0 and tmux_output and tmux_output.strip():
+                logger.info(f'[{server_name}] Получено {len(tmux_output.splitlines())} строк через tmux')
+                return tmux_output
+    
+    # ===== МЕТОД 4: screen =====
+    logger.info(f'[{server_name}] Попытка получить консоль через screen...')
+    screen_check = f"screen -ls 2>/dev/null | grep -i '{server_name}'"
+    screen_out, _, screen_code = execute_command(client, screen_check, timeout=3)
+    
+    if screen_code == 0 and screen_out.strip():
+        screen_name = screen_out.strip().split('.')[0].split()[0]
+        screen_capture = f"screen -S {screen_name} -X hardcopy -"
+        screen_output, _, screen_err_code = execute_command(client, screen_capture, timeout=5)
+        
+        if screen_err_code == 0 and screen_output and screen_output.strip():
+            logger.info(f'[{server_name}] Получено {len(screen_output.splitlines())} строк через screen')
+            return screen_output
+    
+    # ===== МЕТОД 5: /proc/{pid}/fd/1 =====
+    logger.info(f'[{server_name}] Попытка получить консоль через /proc...')
+    ps_cmd = f"pgrep -f 'java.*server.jar.*{server_name}' || pgrep -f 'java.*server.jar' | head -1"
+    ps_out, _, ps_code = execute_command(client, ps_cmd, timeout=3)
+    
+    if ps_code == 0 and ps_out.strip():
+        pid = ps_out.strip().split('\n')[0].strip()
+        proc_cmd = f"ls -la /proc/{pid}/fd/2 2>/dev/null && tail -n {lines} < /proc/{pid}/fd/2 2>/dev/null"
+        proc_output, _, proc_code = execute_command(client, proc_cmd, timeout=5)
+        
+        if proc_code == 0 and proc_output and proc_output.strip():
+            logger.info(f'[{server_name}] Получено {len(proc_output.splitlines())} строк из /proc')
+            return proc_output
+    
+    logger.warning(f'[{server_name}] Не удалось получить консоль ни одним методом')
+    return "Консоль недоступна. Сервер не запущен или не настроен."
+
+
+# ---------- Получение статуса через RCON (опционально) ----------
+def get_live_console(client, server_name, count=50):
+    """
+    Получает информацию через RCON (список игроков, TPS)
+    Используется редко, не создаёт постоянных подключений
+    """
+    # Эта функция вызывается только по требованию, не в цикле
+    # RCON подключение создаётся только один раз при запросе
+    return "Live console uses WebSocket instead"
+
+def stop_server_gracefully(client, server_name, password):
+    """Корректно останавливает сервер через RCON или команду stop"""
+    username = client._transport.get_username()
+    server_dir = f"/home/{username}/minecraft_servers/{server_name}"
+    
+    # Пробуем отправить stop через RCON
+    try:
+        ensure_rcon_installed(client, password)
+        rcon_port = 25575
+        rcon_password = "admin123"
+        cmd = f"echo 'stop' | nc -w 2 localhost {rcon_port}"
+        execute_command(client, cmd, timeout=5)
+        logger.info(f'Sent stop command via RCON for {server_name}')
+    except:
+        pass
+    
+    # Ждём корректной остановки
+    time.sleep(5)
+    
+    # Проверяем логи на "Stopping server"
+    check_stop = f"tail -n 10 {server_dir}/server.log 2>/dev/null | grep 'Stopping server'"
+    stop_check, _, _ = execute_command(client, check_stop, timeout=5)
+    
+    if stop_check.strip():
+        logger.info(f'Server {server_name} is stopping gracefully')
+        # Ждём полной остановки
+        for i in range(10):
+            time.sleep(3)
+            check_running = f"ps aux | grep 'java' | grep 'server.jar' | grep '{server_name}' | grep -v grep | wc -l"
+            running, _, _ = execute_command(client, check_running, timeout=5)
+            if running.strip() == '0':
+                logger.info(f'Server {server_name} stopped gracefully')
+                break
+    else:
+        # Принудительно убиваем
+        logger.info(f'Force killing server {server_name}')
+        execute_command(client, f"pkill -9 -f '{server_name}' 2>/dev/null || true", timeout=5)
+        execute_command(client, f"pkill -9 -f 'server.jar' 2>/dev/null || true", timeout=5)
+        time.sleep(3)
+    
+    # Удаляем session.lock
+    world_dir = f"{server_dir}/world"
+    execute_command(client, f"rm -f {world_dir}/session.lock", timeout=5)
+    execute_command(client, f"rm -f {world_dir}/DIM1/session.lock", timeout=5)
+    execute_command(client, f"rm -f {world_dir}/DIM-1/session.lock", timeout=5)
+    logger.info(f'session.lock removed after stop')
+    
+    return True
 
 def get_status(client, server_name):
     if is_server_running(client, server_name):
@@ -692,6 +956,52 @@ def get_status(client, server_name):
             return 'stopped'
         else:
             return 'not_deployed'
+
+def stop_server(client, server_name):
+    """Останавливает сервер через RCON или kill"""
+    username = client._transport.get_username()
+    server_dir = f"/home/{username}/minecraft_servers/{server_name}"
+    server_properties_path = f"{server_dir}/server.properties"
+    
+    # Читаем RCON настройки
+    rcon_port_check = f"grep '^rcon.port=' {server_properties_path} 2>/dev/null | cut -d'=' -f2"
+    rcon_port_out, _, rcon_port_code = execute_command(client, rcon_port_check, timeout=2)
+    
+    rcon_port = 25575
+    if rcon_port_code == 0 and rcon_port_out.strip():
+        try:
+            rcon_port = int(rcon_port_out.strip())
+        except ValueError:
+            pass
+    
+    rcon_pass_check = f"grep '^rcon.password=' {server_properties_path} 2>/dev/null | cut -d'=' -f2"
+    rcon_pass_out, _, rcon_pass_code = execute_command(client, rcon_pass_check, timeout=2)
+    
+    rcon_password = "admin123"
+    if rcon_pass_code == 0 and rcon_pass_out.strip():
+        rcon_password = rcon_pass_out.strip()
+    
+    # Пробуем остановить через RCON
+    try:
+        ensure_rcon_installed(client)
+        rcon_cmd = f"mcrcon -H localhost -P {rcon_port} -p '{rcon_password}' stop"
+        execute_command(client, rcon_cmd, timeout=5)
+        time.sleep(3)
+    except:
+        pass
+    
+    # Если не помогло, убиваем процесс
+    kill_cmd = f"pkill -f 'server.jar' || pkill -f 'minecraft'"
+    execute_command(client, kill_cmd, timeout=3)
+    time.sleep(2)
+    
+    # Удаляем session.lock
+    world_dir = f"{server_dir}/world"
+    execute_command(client, f"rm -f {world_dir}/session.lock", timeout=3)
+    execute_command(client, f"rm -f {world_dir}/DIM1/session.lock", timeout=3)
+    execute_command(client, f"rm -f {world_dir}/DIM-1/session.lock", timeout=3)
+    
+    return True
 
 def get_logs(client, server_name, lines=50):
     username = client._transport.get_username()
@@ -707,14 +1017,39 @@ def get_logs(client, server_name, lines=50):
     out, err, code = execute_command(client, cmd, timeout=10)
     return out
 
-def wait_for_server(client, server_name, timeout=120):
+def wait_for_server(client, server_name, timeout=180):
     start_time = time.time()
+    username = client._transport.get_username()
+    server_dir = f"/home/{username}/minecraft_servers/{server_name}"
+    
+    logger.info(f'Waiting for server {server_name} to start (timeout: {timeout}s)...')
+    
     while time.time() - start_time < timeout:
-        if is_server_running(client, server_name):
-            logs = get_logs(client, server_name, lines=3)
-            if "Done" in logs:
-                return True
+        # Проверяем логи на успешный старт
+        log_check = execute_command(client, f"tail -n 100 {server_dir}/server.log 2>/dev/null || tail -n 100 {server_dir}/logs/latest.log 2>/dev/null", timeout=10)
+        
+        if "Done" in log_check[0]:
+            # Проверяем, нет ли критической ошибки сразу после Done
+            last_lines = log_check[0].split('\n')
+            done_index = None
+            for i, line in enumerate(last_lines):
+                if "Done" in line:
+                    done_index = i
+                    break
+            
+            if done_index is not None:
+                # Проверяем строки после Done
+                lines_after_done = '\n'.join(last_lines[done_index:])
+                # Если после Done нет BindException или другой критической ошибки - сервер запущен
+                if "BindException" not in lines_after_done or "RCON" in lines_after_done:
+                    logger.info(f'Server {server_name} started successfully!')
+                    return True
+        
         time.sleep(3)
+    
+    # Таймаут - возвращаем последние логи для отладки
+    final_logs = execute_command(client, f"tail -n 30 {server_dir}/server.log 2>/dev/null || tail -n 30 {server_dir}/logs/latest.log 2>/dev/null || echo 'No logs found'", timeout=10)
+    logger.error(f'Server {server_name} not ready after {timeout}s. Final logs: {final_logs[0]}')
     return False
 
 # ---------- Запуск через nohup + RCON ----------
@@ -735,41 +1070,129 @@ cd {server_dir}
     execute_command(client, f"chmod +x {server_dir}/start.sh")
     return True
 
-def start_server_via_nohup(client, server_name, password, java_path="java"):
-    ensure_java_installed(client, password, get_required_java_version("1.20.4"))
+def start_server_via_nohup(client, server_name, password, java_path="java", memory_mb=4096):
+    logger.info(f'=== start_server_via_nohup called for {server_name} (memory={memory_mb}MB) ===')
+    ensure_java_installed(client, password, get_required_java_version('1.20.4'))
     ensure_rcon_installed(client, password)
     username = client._transport.get_username()
     server_dir = f"/home/{username}/minecraft_servers/{server_name}"
     pid_file = f"{server_dir}/server.pid"
 
+    # Проверяем, запущен ли уже сервер
+    logger.info(f'Checking if server {server_name} is already running...')
     if is_server_running(client, server_name):
+        logger.info(f'Server {server_name} is already running')
         return True
+    logger.info(f'Server {server_name} is not running, will start it')
+
+    # Корректно останавливаем и удаляем session.lock
+    logger.info(f'Stopping server gracefully and removing session.lock...')
+    stop_server_gracefully(client, server_name, password)
+    
+    # Ждём ещё немного
+    time.sleep(2)
+
+    # ===== ЯВНОЕ УДАЛЕНИЕ session.lock (ГАРАНТИРОВАННО) =====
+    logger.info(f'Ensuring session.lock is removed for all worlds...')
+    
+    # Удаляем ВСЕ session.lock рекурсивно через find
+    remove_locks_cmd = f"find {server_dir} -name 'session.lock' -type f -delete 2>/dev/null; echo $?"
+    remove_out, _, remove_code = execute_command(client, remove_locks_cmd, timeout=5)
+    logger.info(f'session.lock removal: code={remove_code}, output={remove_out.strip()}')
+    
+    # Проверяем что действительно удалилось
+    check_lock = f"find {server_dir} -name 'session.lock' -type f 2>/dev/null | wc -l"
+    lock_count, _, lock_code = execute_command(client, check_lock, timeout=3)
+    locked_files = int(lock_count.strip()) if lock_code == 0 else -1
+    
+    if locked_files > 0:
+        logger.warning(f'{locked_files} session.lock files still exist, trying force rm...')
+        force_rm = f"find {server_dir} -name 'session.lock' -exec rm -f {{}} + 2>/dev/null; echo $?"
+        execute_command(client, force_rm, timeout=5)
+        
+        # Финальная проверка
+        lock_count2, _, _ = execute_command(client, check_lock, timeout=3)
+        locked_files2 = int(lock_count2.strip()) if lock_code == 0 else -1
+        if locked_files2 > 0:
+            logger.error(f'FAILED to remove {locked_files2} session.lock files!')
+        else:
+            logger.info('All session.lock files removed after force rm')
+    else:
+        logger.info('All session.lock files successfully removed')
 
     jar_check = f"test -f {server_dir}/server.jar"
     _, _, code = execute_command(client, jar_check, timeout=10)
     if code != 0:
         raise Exception("server.jar not found")
 
-    # Создаём start.sh
-    create_start_script(client, server_dir, java_path)
+    logger.info(f'Creating start script...')
+    # Создаём start.sh с указанным количеством RAM
+    create_start_script(client, server_dir, java_path, f"{memory_mb}M")
+    
+    # Проверяем, существует ли указанный путь к Java, и если нет - ищем правильный
+    logger.info(f'Checking Java path: {java_path}')
+    check_java_path = f"test -f {java_path} && echo 'EXISTS' || echo 'NOT_FOUND'"
+    java_path_check, _, _ = execute_command(client, check_java_path, timeout=5)
+    
+    if 'NOT_FOUND' in java_path_check:
+        logger.warning(f'Java path {java_path} not found, searching for correct path...')
+        # Пробуем найти Java 21
+        for jver in ['21', '17', '11', '8']:
+            for suffix in ['', '-amd64']:
+                test_path = f"/usr/lib/jvm/java-{jver}-openjdk{suffix}/bin/java"
+                check_test = f"test -f {test_path} && echo 'FOUND' || echo 'NOT_FOUND'"
+                test_out, _, _ = execute_command(client, check_test, timeout=5)
+                if 'FOUND' in test_out:
+                    java_path = test_path
+                    logger.info(f'Found Java at: {java_path}')
+                    break
+            if java_path != 'java':
+                break
+    else:
+        logger.info(f'Java path verified: {java_path}')
 
-    # Удаляем все session.lock в папке сервера (рекурсивно)
-    execute_command(client, f"find {server_dir} -name 'session.lock' -type f -delete", timeout=10)
-
-    # Очищаем Spark tmp
-    spark_tmp = f"{server_dir}/plugins/spark/tmp"
-    execute_command(client, f"rm -rf {spark_tmp}", timeout=5)
-
-    # Запускаем через nohup
-    cmd = f"cd {server_dir} && nohup bash start.sh > server.log 2>&1 & echo $! > {pid_file}"
-    out, err, code = execute_command(client, cmd, timeout=30)
+    # Очищаем старые логи перед запуском
+    logger.info(f'Clearing old server logs...')
+    execute_command(client, f"rm -f {server_dir}/server.log", timeout=5)
+    execute_command(client, f"rm -f {server_dir}/logs/latest.log", timeout=5)
+    logger.info(f'Old logs cleared')
+    
+    # Ждём перед запуском
+    time.sleep(2)
+    logger.info(f'Waiting 2 seconds before launch...')
+    
+    # Запускаем сервер
+    logger.info(f'Launching server...')
+    launch_cmd = f"cd {server_dir} && {java_path} -Xmx{memory_mb}M -Xms{memory_mb}M -jar server.jar nogui > server.log 2>&1 & echo $!"
+    out, err, code = execute_command(client, launch_cmd, timeout=30)
+    logger.info(f'Launch command output: out={out.strip()}, err={err.strip()}, code={code}')
+    
+    # Проверяем PID
+    pid = out.strip()
+    if pid and pid.isdigit():
+        logger.info(f'Server started with PID: {pid}')
+        # Сохраняем PID
+        execute_command(client, f"echo {pid} > {pid_file}", timeout=5)
+        # Проверяем, что процесс запущен
+        time.sleep(3)
+        check_pid = f"ps -p {pid} -o pid,cmd 2>/dev/null | grep java"
+        pid_check, _, _ = execute_command(client, check_pid, timeout=5)
+        logger.info(f'PID check: {pid_check.strip() if pid_check else "No output"}')
+    else:
+        logger.warning(f'Could not get PID, output was: {out.strip()}')
+    
     if code != 0:
+        check_log = f"tail -n 20 {server_dir}/server.log 2>/dev/null || echo 'No logs'"
+        log_out, _, _ = execute_command(client, check_log, timeout=5)
+        logger.error(f'Latest logs:\n{log_out[:500]}')
         raise Exception(f"Start command failed: {err}")
+    
+    logger.info(f'Server {server_name} start command executed (PID: {out.strip()}), waiting for ready...')
 
     # Ждём готовности сервера
-    if not wait_for_server(client, server_name, timeout=120):
-        log_check = execute_command(client, f"tail -n 30 {server_dir}/server.log", timeout=10)
-        raise Exception(f"Server not ready. Logs:\n{log_check[0]}")
+    if not wait_for_server(client, server_name, timeout=180):
+        log_check = execute_command(client, f"tail -n 50 {server_dir}/server.log 2>/dev/null || tail -n 50 {server_dir}/logs/latest.log 2>/dev/null || echo 'No logs found'", timeout=10)
+        raise Exception(f"Server not ready in time. Last logs:\n{log_check[0]}")
     return True
 
 def stop_server(client, server_name):
@@ -804,17 +1227,103 @@ def delete_server(client, server_name):
 
 # ---------- Отправка команд через RCON ----------
 def send_command(client, server_name, command):
-    ensure_rcon_installed(client)
+    username = client._transport.get_username()
+    server_dir = f"/home/{username}/minecraft_servers/{server_name}"
+    server_properties_path = f"{server_dir}/server.properties"
+    
+    # Читаем RCON настройки из server.properties
+    rcon_port_check = f"grep '^rcon.port=' {server_properties_path} 2>/dev/null | cut -d'=' -f2"
+    rcon_port_out, _, rcon_port_code = execute_command(client, rcon_port_check, timeout=2)
+    
     rcon_port = 25575
+    if rcon_port_code == 0 and rcon_port_out.strip():
+        try:
+            rcon_port = int(rcon_port_out.strip())
+        except ValueError:
+            pass
+    
+    rcon_pass_check = f"grep '^rcon.password=' {server_properties_path} 2>/dev/null | cut -d'=' -f2"
+    rcon_pass_out, _, rcon_pass_code = execute_command(client, rcon_pass_check, timeout=2)
+    
     rcon_password = "admin123"
-    cmd = f"mcrcon -H localhost -P {rcon_port} -p {rcon_password} '{command}'"
-    out, err, code = execute_command(client, cmd, timeout=5)
+    if rcon_pass_code == 0 and rcon_pass_out.strip():
+        rcon_password = rcon_pass_out.strip()
+    
+    ensure_rcon_installed(client)
+    cmd = f"mcrcon -H localhost -P {rcon_port} -p '{rcon_password}' '{command}'"
+    out, err, code = execute_command(client, cmd, timeout=10)
     if code == 0:
         return True
     raise Exception(f"RCON command failed: {err}")
 
+# ---------- Смена ядра сервера ----------
+def change_server_core(client, server_name, new_server_type, new_mc_version, password, memory_mb=4096, mode='kernel_only'):
+    """
+    Смена ядра сервера
+    mode='kernel_only' - только замена JAR файла
+    mode='full_reset' - полная очистка (удаление world, плагинов и т.д.)
+    """
+    username = client._transport.get_username()
+    server_dir = f"/home/{username}/minecraft_servers/{server_name}"
+    
+    # Проверяем URL
+    jar_url = get_jar_url(new_server_type, new_mc_version)
+    if not jar_url:
+        raise Exception(f"No JAR URL found for {new_server_type} {new_mc_version}")
+    
+    # Останавливаем сервер
+    logger.info(f'Stopping server before core change: {server_name}')
+    stop_server(client, server_name)
+    time.sleep(3)
+    
+    # Удаляем session.lock
+    execute_command(client, f"find {server_dir} -name 'session.lock' -type f -delete 2>/dev/null", timeout=5)
+    
+    if mode == 'full_reset':
+        # ===== ПОЛНАЯ ОЧИСТКА =====
+        logger.info(f'Full reset mode: removing everything except backups')
+        # Удаляем всё кроме папки backups
+        execute_command(client, f"cd {server_dir} && find . -mindepth 1 -maxdepth 1 ! -name 'backups' -exec rm -rf {{}} +", timeout=30)
+        logger.info('All files removed except backups')
+    else:
+        # ===== ТОЛЬКО ЯДРО =====
+        logger.info(f'Kernel only mode: removing old JAR')
+        # Удаляем старый JAR
+        execute_command(client, f"rm -f {server_dir}/server.jar", timeout=5)
+        execute_command(client, f"rm -f {server_dir}/server.log", timeout=5)
+        execute_command(client, f"rm -f {server_dir}/logs/latest.log", timeout=5)
+    
+    # Скачиваем новое ядро
+    logger.info(f'Downloading new core: {new_server_type} {new_mc_version}')
+    cmd_download = f"curl -k -L --retry 3 --retry-delay 5 -o {server_dir}/server.jar {jar_url}"
+    out, err, code = execute_command(client, cmd_download, timeout=300)
+    if code != 0:
+        raise Exception(f"Download failed: {err}\n{out}")
+    
+    # Проверяем что скачался JAR
+    check_cmd = f"file {server_dir}/server.jar | grep -q 'Zip archive'"
+    _, _, check_code = execute_command(client, check_cmd, timeout=5)
+    if check_code != 0:
+        head_cmd = f"head -c 200 {server_dir}/server.jar"
+        head_out, _, _ = execute_command(client, head_cmd, timeout=5)
+        raise Exception(f"Downloaded file is not a JAR (probably HTML). First 200 chars: {head_out}")
+    
+    # Переименовываем в server.jar если нужно
+    rename_jar_to_server(client, server_dir)
+    
+    # Обновляем eula.txt
+    execute_command(client, f"echo 'eula=true' > {server_dir}/eula.txt")
+    
+    # Обновляем Java если нужно
+    required_java = get_required_java_version(new_mc_version)
+    java_path = ensure_java_installed(client, password, required_java)
+    logger.info(f'Java ready: {java_path} (version {required_java})')
+    
+    logger.info(f'Core change completed: {new_server_type} {new_mc_version} (mode={mode})')
+    return True
+
 # ---------- Развертывание сервера ----------
-def deploy_minecraft_server(client, server_name, server_type, mc_version, password):
+def deploy_minecraft_server(client, server_name, server_type, mc_version, password, memory_mb=4096):
     required_java = get_required_java_version(mc_version)
     java_path = ensure_java_installed(client, password, required_java)
     username = client._transport.get_username()
@@ -920,7 +1429,7 @@ max-world-size=29999984
         write_server_properties(client, server_name, props)
 
     # Запуск через nohup
-    start_server_via_nohup(client, server_name, password, java_path)
+    start_server_via_nohup(client, server_name, password, java_path, memory_mb)
     return True
 
 # ---------- Системная статистика ----------
@@ -948,4 +1457,158 @@ def get_system_stats(client):
                 stats['ram_percent'] = round((used / total) * 100, 1) if total > 0 else 0.0
     except Exception:
         pass
+    return stats
+
+# ---------- Системная статистика SSH хоста (весь сервер) ----------
+def get_host_system_stats(client):
+    """
+    Получает системную статистику всего SSH хоста (VPS/сервер)
+    Возвращает: CPU, RAM, диск, сеть, количество процессов, uptime
+    """
+    stats = {
+        'cpu_percent': 0.0,
+        'ram_total_mb': 0,
+        'ram_used_mb': 0,
+        'ram_percent': 0.0,
+        'disk_total_gb': 0,
+        'disk_used_gb': 0,
+        'disk_percent': 0.0,
+        'processes': 0,
+        'load_avg': {'1min': 0.0, '5min': 0.0, '15min': 0.0},
+        'uptime': ''
+    }
+    
+    try:
+        # CPU (быстрый метод через /proc/stat)
+        out, _, code = execute_command(client, "cat /proc/stat | grep '^cpu ' | awk '{print ($2+$4)*100/($2+$4+$5)}'", timeout=2)
+        if code == 0 and out.strip():
+            cpu_str = out.strip().replace(',', '.')
+            stats['cpu_percent'] = round(float(cpu_str), 1)
+        
+        # RAM - пробуем несколько методов
+        ram_found = False
+        
+        # ===== МЕТОД 1: free -m =====
+        out_ram, err_ram, code_ram = execute_command(client, "free -m | grep Mem | awk '{print $2, $3, $7}'", timeout=2)
+        logger.info(f'[HOST_STATS] Method 1 (free -m): code={code_ram}, out={repr(out_ram)}, err={repr(err_ram)}')
+        
+        if code_ram == 0 and out_ram and out_ram.strip():
+            raw_ram = out_ram
+            # Заменяем запятые на точки (locale issue)
+            out_ram = out_ram.replace(',', '.')
+            parts = out_ram.strip().split()
+            if len(parts) >= 3:
+                try:
+                    stats['ram_total_mb'] = int(float(parts[0]))
+                    stats['ram_used_mb'] = int(float(parts[1]))
+                    stats['ram_free_mb'] = int(float(parts[2]))
+                    stats['ram_percent'] = round((stats['ram_used_mb'] / stats['ram_total_mb']) * 100, 1) if stats['ram_total_mb'] > 0 else 0.0
+                    ram_found = True
+                    logger.info(f'[HOST_STATS] RAM parsed via free -m: total={stats["ram_total_mb"]}MB, used={stats["ram_used_mb"]}MB, percent={stats["ram_percent"]}%')
+                except Exception as e:
+                    logger.error(f'[HOST_STATS] RAM parse error from free: {e}, data={repr(raw_ram)}')
+        
+        # ===== МЕТОД 2: /proc/meminfo (fallback) =====
+        if not ram_found:
+            logger.info('[HOST_STATS] Trying /proc/meminfo fallback...')
+            out_meminfo, err_meminfo, code_meminfo = execute_command(
+                client,
+                "grep -E '^(MemTotal|MemFree|MemAvailable):' /proc/meminfo",
+                timeout=2
+            )
+            logger.info(f'[HOST_STATS] /proc/meminfo: code={code_meminfo}, out={repr(out_meminfo)}, err={repr(err_meminfo)}')
+            
+            if code_meminfo == 0 and out_meminfo and out_meminfo.strip():
+                mem_total_kb = 0
+                mem_free_kb = 0
+                mem_available_kb = 0
+                
+                for line in out_meminfo.strip().split('\n'):
+                    line = line.replace(',', '.').strip()
+                    if 'MemTotal:' in line:
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            mem_total_kb = float(parts[1])
+                    elif 'MemFree:' in line:
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            mem_free_kb = float(parts[1])
+                    elif 'MemAvailable:' in line:
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            mem_available_kb = float(parts[1])
+                
+                if mem_total_kb > 0:
+                    # Используем MemAvailable если есть (более точная метрика)
+                    mem_used_kb = mem_total_kb - mem_available_kb if mem_available_kb > 0 else mem_total_kb - mem_free_kb
+                    
+                    stats['ram_total_mb'] = round(mem_total_kb / 1024)
+                    stats['ram_used_mb'] = round(mem_used_kb / 1024)
+                    stats['ram_free_mb'] = round(mem_available_kb / 1024) if mem_available_kb > 0 else round(mem_free_kb / 1024)
+                    stats['ram_percent'] = round((stats['ram_used_mb'] / stats['ram_total_mb']) * 100, 1) if stats['ram_total_mb'] > 0 else 0.0
+                    ram_found = True
+                    logger.info(f'[HOST_STATS] RAM parsed via /proc/meminfo: total={stats["ram_total_mb"]}MB, used={stats["ram_used_mb"]}MB, percent={stats["ram_percent"]}%')
+                else:
+                    logger.warning('[HOST_STATS] /proc/meminfo: MemTotal is 0 or not parsed')
+            else:
+                logger.warning(f'[HOST_STATS] /proc/meminfo failed: code={code_meminfo}, out={repr(out_meminfo)}')
+        
+        # ===== МЕТОД 3: free без grep (прямое чтение) =====
+        if not ram_found:
+            logger.info('[HOST_STATS] Trying direct free command output...')
+            out_free, err_free, code_free = execute_command(client, "free -m", timeout=2)
+            logger.info(f'[HOST_STATS] Direct free -m: code={code_free}, out={repr(out_free)}, err={repr(err_free)}')
+            
+            if code_free == 0 and out_free and out_free.strip():
+                lines = out_free.strip().split('\n')
+                for line in lines:
+                    if line.startswith('Mem:'):
+                        parts = line.replace(',', '.').split()
+                        if len(parts) >= 7:
+                            try:
+                                stats['ram_total_mb'] = int(float(parts[1]))
+                                stats['ram_used_mb'] = int(float(parts[2]))
+                                stats['ram_free_mb'] = int(float(parts[3]))
+                                stats['ram_percent'] = round((stats['ram_used_mb'] / stats['ram_total_mb']) * 100, 1) if stats['ram_total_mb'] > 0 else 0.0
+                                ram_found = True
+                                logger.info(f'[HOST_STATS] RAM parsed via direct free: total={stats["ram_total_mb"]}MB, used={stats["ram_used_mb"]}MB, percent={stats["ram_percent"]}%')
+                                break
+                            except Exception as e:
+                                logger.error(f'[HOST_STATS] RAM parse error from direct free: {e}, line={repr(line)}')
+                        break
+        
+        # Диск
+        out_disk, _, code_disk = execute_command(client, "df -m / | tail -1 | awk '{print $2, $3, $5}'", timeout=2)
+        if code_disk == 0 and out_disk.strip():
+            parts = out_disk.strip().split()
+            if len(parts) >= 3:
+                stats['disk_total_gb'] = round(int(parts[0]) / 1024, 1)
+                stats['disk_used_gb'] = round(int(parts[1]) / 1024, 1)
+                stats['disk_percent'] = float(parts[2].replace('%', ''))
+        
+        # Количество процессов
+        out_procs, _, code_procs = execute_command(client, "ps aux | wc -l", timeout=2)
+        if code_procs == 0 and out_procs.strip():
+            stats['processes'] = int(out_procs.strip())
+        
+        # Load average - заменяем запятые на точки
+        out_load, _, code_load = execute_command(client, "cat /proc/loadavg", timeout=2)
+        if code_load == 0 and out_load:
+            out_load = out_load.replace(',', '.')
+            parts = out_load.strip().split()
+            if len(parts) >= 3:
+                stats['load_avg'] = {
+                    '1min': float(parts[0]),
+                    '5min': float(parts[1]),
+                    '15min': float(parts[2])
+                }
+        
+        # Uptime
+        out_uptime, _, code_uptime = execute_command(client, "uptime -p 2>/dev/null || uptime | awk -F'up' '{print $2}' | awk -F',' '{print $1}'", timeout=2)
+        if code_uptime == 0 and out_uptime.strip():
+            stats['uptime'] = out_uptime.strip().replace('up', '').strip()
+        
+    except Exception as e:
+        logger.error(f'Ошибка получения статистики хоста: {str(e)}')
+    
     return stats

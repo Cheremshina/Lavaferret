@@ -1,54 +1,387 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>Ваши серверы</h1>
-<div class="row">
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="mb-0">Ваши серверы</h1>
+    <a href="{{ url_for('add_server') }}" class="btn btn-primary btn-lg shadow-hover">
+        <i class="bi bi-plus-circle"></i> Добавить сервер
+    </a>
+</div>
+
+<!-- Блок системной нагрузки хостов -->
+<div id="host-stats-container" class="mb-4"></div>
+
+<div class="row g-4" id="servers-container">
     {% for server, stats in server_stats %}
-    <div class="col-md-4">
-        <div class="card server-card">
+    <div class="col-md-6 col-lg-4 server-item" data-host="{{ server.ssh_host }}">
+        <div class="card server-card h-100 shadow-hover">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">{{ server.name }}</h5>
+                <span class="badge bg-{% if server.status == 'running' %}success{% elif server.status == 'stopped' %}warning{% else %}secondary{% endif %} status-badge">
+                    {{ server.status }}
+                </span>
+            </div>
             <div class="card-body">
-                <h5 class="card-title">{{ server.name }}</h5>
-                <p class="card-text">
-                    <strong>Тип:</strong> {{ server.server_type }}<br>
-                    <strong>Версия:</strong> {{ server.mc_version }}<br>
-                    <strong>Хост:</strong> {{ server.ssh_host }}<br>
-                    <span class="badge bg-{% if server.status == 'running' %}success{% elif server.status == 'stopped' %}warning{% else %}secondary{% endif %} status-badge">
-                        {{ server.status }}
-                    </span>
-                </p>
-                <!-- Блок статистики (виден только для запущенных серверов) -->
-                {% if server.status == 'running' %}
-                <div class="mt-2">
-                    <div>
-                        <span>CPU: <span id="cpu-{{ server.id }}">{{ stats.cpu_percent|default(0) }}%</span></span>
-                        <div class="progress" style="height: 6px;">
-                            <div id="cpu-bar-{{ server.id }}" class="progress-bar bg-info" role="progressbar"
-                                 style="width: {{ stats.cpu_percent|default(0) }}%;"
-                                 aria-valuenow="{{ stats.cpu_percent|default(0) }}" aria-valuemin="0" aria-valuemax="100"></div>
-                        </div>
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span class="text-muted" style="font-size: 0.9rem;">Тип</span>
+                        <span style="font-size: 0.9rem;">{{ server.server_type }}</span>
                     </div>
-                    <div class="mt-1">
-                        <span>RAM: <span id="ram-used-{{ server.id }}">{{ stats.ram_used_mb|default(0) }}</span> МБ /
-                        <span id="ram-total-{{ server.id }}">{{ stats.ram_total_mb|default(0) }}</span> МБ
-                        (<span id="ram-percent-{{ server.id }}">{{ stats.ram_percent|default(0) }}</span>%)</span>
-                        <div class="progress" style="height: 6px;">
-                            <div id="ram-bar-{{ server.id }}" class="progress-bar bg-success" role="progressbar"
-                                 style="width: {{ stats.ram_percent|default(0) }}%;"
-                                 aria-valuenow="{{ stats.ram_percent|default(0) }}" aria-valuemin="0" aria-valuemax="100"></div>
-                        </div>
+                    <div class="d-flex justify-content-between mb-1">
+                        <span class="text-muted" style="font-size: 0.9rem;">Версия</span>
+                        <span style="font-size: 0.9rem;">{{ server.mc_version }}</span>
+                    </div>
+                    <div class="d-flex justify-content-between">
+                        <span class="text-muted" style="font-size: 0.9rem;">Хост</span>
+                        <span style="font-size: 0.9rem;">{{ server.ssh_host }}</span>
                     </div>
                 </div>
-                {% else %}
-                <p class="text-muted mt-2">Статистика недоступна (сервер остановлен)</p>
-                {% endif %}
-                <div class="mt-2">
-                    <a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-primary btn-sm">Управление</a>
-                    <a href="{{ url_for('console', server_id=server.id) }}" class="btn btn-info btn-sm">Консоль</a>
+                
+                <!-- Мини-индикаторы нагрузки -->
+                
+                <div class="d-grid gap-2 mt-3">
+                    <a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-primary btn-sm shadow-hover">
+                        <i class="bi bi-gear"></i> Управление
+                    </a>
+                    <div class="row g-1">
+                        <div class="col-4">
+                            <button onclick="openConsole({{ server.id }}, '{{ server.name }}')" class="btn btn-info btn-sm w-100 shadow-hover" title="Консоль">
+                                <i class="bi bi-terminal"></i>
+                            </button>
+                        </div>
+                        <div class="col-4">
+                            <a href="{{ url_for('start_server_route', server_id=server.id) }}" class="btn btn-success btn-sm w-100 shadow-hover" title="Запустить">
+                                <i class="bi bi-play-fill"></i>
+                            </a>
+                        </div>
+                        <div class="col-4">
+                            <a href="{{ url_for('stop_server_route', server_id=server.id) }}" class="btn btn-warning btn-sm w-100 shadow-hover" title="Остановить">
+                                <i class="bi bi-stop-fill"></i>
+                            </a>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
-    {% else %}
-    <p>Нет добавленных серверов. <a href="{{ url_for('add_server') }}">Добавить первый</a></p>
     {% endfor %}
+    {% if not server_stats %}
+    <div class="col-12">
+        <div class="card text-center py-5">
+            <div class="card-body">
+                <i class="bi bi-server" style="font-size: 4rem; color: var(--text-muted);"></i>
+                <h3 class="mt-3">Нет добавленных серверов</h3>
+                <p class="text-muted">Начните с добавления вашего первого сервера</p>
+                <a href="{{ url_for('add_server') }}" class="btn btn-primary btn-lg mt-3 shadow-hover">
+                    <i class="bi bi-plus-circle"></i> Добавить первый сервер
+                </a>
+            </div>
+        </div>
+    </div>
+    {% endif %}
 </div>
+
+<!-- Модальное окно консоли -->
+<div class="modal fade" id="consoleModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content console-modal-content">
+            <div class="modal-header console-modal-header">
+                <div class="d-flex align-items-center">
+                    <div class="terminal-dots me-3">
+                        <span class="dot dot-red"></span>
+                        <span class="dot dot-yellow"></span>
+                        <span class="dot dot-green"></span>
+                    </div>
+                    <h5 class="modal-title mb-0" id="consoleModalTitle">
+                        <i class="bi bi-terminal-fill"></i>
+                        <span id="consoleServerName">Консоль сервера</span>
+                    </h5>
+                </div>
+                <div class="d-flex gap-2">
+                    <button class="btn-icon" onclick="toggleAutoScroll()" id="autoscroll-btn" title="Автопрокрутка">
+                        <i class="bi bi-arrow-down-circle-fill"></i>
+                    </button>
+                    <button class="btn-icon" onclick="clearConsole()" title="Очистить">
+                        <i class="bi bi-trash3"></i>
+                    </button>
+                    <button type="button" class="btn-icon btn-close-icon" data-bs-dismiss="modal" aria-label="Закрыть">
+                        <i class="bi bi-x-lg"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="modal-body console-modal-body p-0">
+                <div id="console-output" class="console-output"></div>
+                <div class="console-input-wrapper p-3">
+                    <div class="console-prompt">
+                        <span class="prompt-symbol">➜</span>
+                        <span class="prompt-path">~/minecraft_servers/server</span>
+                    </div>
+                    <div class="input-group mt-2">
+                        <input type="text" id="quick-command-input" class="form-control console-input" placeholder="Введите команду..." autofocus>
+                        <button id="quick-send-command" class="btn btn-send"><i class="bi bi-send-fill"></i> Отправить</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // ============================================
+    // WebSocket консоль
+    // ============================================
+    let currentConsoleServerId = null;
+    let socket = null;
+    let autoScroll = true;
+    let isUserScrolling = false;
+    let commandHistory = [];
+    let historyIndex = -1;
+    
+    // Инициализация WebSocket
+    function initWebSocket() {
+        const { io } = window.io || {};
+        if (!io) {
+            console.error('Socket.IO не загружен');
+            return;
+        }
+        
+        socket = io();
+        
+        socket.on('connect', () => {
+            console.log('WebSocket подключен');
+        });
+        
+        socket.on('console_update', (data) => {
+            updateConsoleOutput(data.data);
+        });
+        
+        socket.on('disconnect', () => {
+            console.log('WebSocket отключен');
+        });
+    }
+    
+    // Открыть консоль
+    function openConsole(serverId, serverName) {
+        currentConsoleServerId = serverId;
+        
+        // Обновляем заголовок
+        document.getElementById('consoleServerName').textContent = `Консоль: ${serverName}`;
+        
+        // Показываем модальное окно
+        const modal = new bootstrap.Modal(document.getElementById('consoleModal'));
+        modal.show();
+        
+        // Подключаемся к WebSocket
+        if (socket && socket.connected) {
+            socket.emit('join_console', { server_id: serverId });
+        }
+        
+        // Очищаем консоль
+        const output = document.getElementById('console-output');
+        if (output) {
+            output.textContent = `[Подключение к серверу ${serverName}...]\n`;
+        }
+        
+        // Загружаем начальную консоль
+        fetchConsoleOutput();
+        
+        // Фокус на поле ввода
+        setTimeout(() => {
+            const input = document.getElementById('quick-command-input');
+            if (input) input.focus();
+        }, 500);
+    }
+    
+    // Закрыть консоль
+    function closeConsoleModal() {
+        if (currentConsoleServerId && socket) {
+            socket.emit('leave_console', { server_id: currentConsoleServerId });
+        }
+        currentConsoleServerId = null;
+    }
+    
+    // Загрузить вывод консоли
+    function fetchConsoleOutput() {
+        if (!currentConsoleServerId) return;
+        
+        fetch(`/server/${currentConsoleServerId}/api/logs`)
+            .then(res => res.json())
+            .then(data => {
+                updateConsoleOutput(data.logs);
+            })
+            .catch(err => {
+                console.error('Ошибка загрузки консоли:', err);
+            });
+    }
+    
+    // Обновить вывод консоли
+    function updateConsoleOutput(output) {
+        const consoleOutput = document.getElementById('console-output');
+        if (!consoleOutput) return;
+        
+        const oldScrollHeight = consoleOutput.scrollHeight;
+        consoleOutput.textContent = output || '[Консоль пуста или сервер не запущен]\n';
+        
+        // Автоматическая прокрутка
+        if (autoScroll && !isUserScrolling) {
+            consoleOutput.scrollTo({
+                top: consoleOutput.scrollHeight,
+                behavior: 'smooth'
+            });
+        }
+    }
+    
+    // Отправить команду
+    function sendCommand() {
+        const input = document.getElementById('quick-command-input');
+        const cmd = input.value.trim();
+        if (!cmd || !currentConsoleServerId) return;
+        
+        // Добавляем в историю
+        commandHistory.push(cmd);
+        historyIndex = commandHistory.length;
+        
+        const sendBtn = document.getElementById('quick-send-command');
+        sendBtn.classList.add('sending');
+        sendBtn.disabled = true;
+        
+        // Отправляем через WebSocket если подключен
+        if (socket && socket.connected) {
+            socket.emit('send_command', {
+                server_id: currentConsoleServerId,
+                command: cmd
+            }, (response) => {
+                if (response && response.status === 'ok') {
+                    input.value = '';
+                    setTimeout(() => {
+                        fetchConsoleOutput();
+                        sendBtn.classList.remove('sending');
+                        sendBtn.disabled = false;
+                    }, 500);
+                } else {
+                    alert('Ошибка: ' + (response ? response.message : 'неизвестная ошибка'));
+                    sendBtn.classList.remove('sending');
+                    sendBtn.disabled = false;
+                }
+            });
+        } else {
+            // Fallback на HTTP
+            fetch(`/server/${currentConsoleServerId}/api/command`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({command: cmd})
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.status === 'ok') {
+                    input.value = '';
+                    setTimeout(() => {
+                        fetchConsoleOutput();
+                        sendBtn.classList.remove('sending');
+                        sendBtn.disabled = false;
+                    }, 500);
+                } else {
+                    alert('Ошибка: ' + (data.message || 'неизвестная ошибка'));
+                    sendBtn.classList.remove('sending');
+                    sendBtn.disabled = false;
+                }
+            })
+            .catch(err => {
+                alert('Ошибка соединения: ' + err);
+                sendBtn.classList.remove('sending');
+                sendBtn.disabled = false;
+            });
+        }
+    }
+    
+    // Переключить автопрокрутку
+    function toggleAutoScroll() {
+        autoScroll = !autoScroll;
+        const btn = document.getElementById('autoscroll-btn');
+        if (btn) {
+            if (autoScroll) {
+                btn.style.color = '#38ef7d';
+                btn.style.background = 'rgba(56, 239, 125, 0.2)';
+            } else {
+                btn.style.color = '#f5576c';
+                btn.style.background = 'rgba(245, 87, 108, 0.2)';
+            }
+        }
+    }
+    
+    // Очистить консоль
+    function clearConsole() {
+        const output = document.getElementById('console-output');
+        if (output) {
+            output.textContent = '[Консоль очищена]\n';
+        }
+    }
+    
+    // Проверка прокрутки
+    function checkUserScroll() {
+        const output = document.getElementById('console-output');
+        if (!output) return;
+        
+        const isAtBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 50;
+        isUserScrolling = !isAtBottom;
+    }
+    
+    // Обработчики событий
+    document.addEventListener('DOMContentLoaded', function() {
+        // Инициализация WebSocket
+        initWebSocket();
+        
+        // Инициализация кнопки автопрокрутки
+        const autoscrollBtn = document.getElementById('autoscroll-btn');
+        if (autoscrollBtn) {
+            autoscrollBtn.style.color = '#38ef7d';
+            autoscrollBtn.style.background = 'rgba(56, 239, 125, 0.2)';
+        }
+        
+        // Обработчик отправки команды
+        const sendBtn = document.getElementById('quick-send-command');
+        const commandInput = document.getElementById('quick-command-input');
+        
+        if (sendBtn) {
+            sendBtn.addEventListener('click', sendCommand);
+        }
+        
+        if (commandInput) {
+            commandInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    sendCommand();
+                } else if (e.key === 'ArrowUp') {
+                    // История команд вверх
+                    if (historyIndex > 0) {
+                        historyIndex--;
+                        commandInput.value = commandHistory[historyIndex];
+                    }
+                    e.preventDefault();
+                } else if (e.key === 'ArrowDown') {
+                    // История команд вниз
+                    if (historyIndex < commandHistory.length - 1) {
+                        historyIndex++;
+                        commandInput.value = commandHistory[historyIndex];
+                    } else {
+                        historyIndex = commandHistory.length;
+                        commandInput.value = '';
+                    }
+                    e.preventDefault();
+                }
+            });
+        }
+        
+        // Отслеживание прокрутки
+        const consoleOutput = document.getElementById('console-output');
+        if (consoleOutput) {
+            consoleOutput.addEventListener('scroll', checkUserScroll);
+        }
+        
+        // Закрытие модального окна
+        const consoleModal = document.getElementById('consoleModal');
+        if (consoleModal) {
+            consoleModal.addEventListener('hidden.bs.modal', closeConsoleModal);
+        }
+    });
+</script>
 {% endblock %}
