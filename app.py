@@ -165,6 +165,12 @@ def dirname_filter(path):
         return ''
     return '/'.join(path.split('/')[:-1])
 
+@app.context_processor
+def inject_csrf_token():
+    """Добавляет csrf_token в шаблоны без Flask-WTF"""
+    from flask import session
+    return dict(csrf_token=session.get('_csrf_token', ''))
+
 # БД
 db.init_app(app)
 
@@ -246,6 +252,10 @@ def register():
         logger.info(f'New user registered: {username}')
         flash('Registration successful, please login')
         return redirect(url_for('login'))
+    from flask import session
+    import secrets
+    if '_csrf_token' not in session:
+        session['_csrf_token'] = secrets.token_hex(32)
     return render_template('register.html')
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -256,6 +266,10 @@ def login():
         user = User.query.filter_by(username=username).first()
         if user and check_password_hash(user.password, password):
             login_user(user)
+            from flask import session
+            import secrets
+            if '_csrf_token' not in session:
+                session['_csrf_token'] = secrets.token_hex(32)
             logger.info(f'User logged in: {username}')
             return redirect(url_for('index'))
         flash('Invalid credentials')
@@ -275,6 +289,10 @@ def logout():
 @app.route('/')
 @login_required
 def index():
+    from flask import session
+    import secrets
+    if '_csrf_token' not in session:
+        session['_csrf_token'] = secrets.token_hex(32)
     own_servers = Server.query.filter_by(user_id=current_user.id).all()
     co_servers = Server.query.join(server_access).filter(server_access.c.user_id == current_user.id).all()
     servers = list(set(own_servers + co_servers))
@@ -930,6 +948,243 @@ def ports(server_id):
             flash(f'Ошибка: {e}')
         return redirect(url_for('ports', server_id=server.id))
     return render_template('ports.html', server=server, port=port, server_ip=server_ip, free_ports=free_ports, active_page='ports')
+
+# ------------------------------------------------------------
+# SSH туннелирование портов
+# ------------------------------------------------------------
+@app.route('/server/<int:server_id>/tunnel/start', methods=['POST'])
+@login_required
+def start_tunnel(server_id):
+    server = get_server_or_404(server_id)
+    try:
+        result = create_ssh_tunnel(
+            server_name=server.name,
+            ssh_host=server.ssh_host,
+            ssh_port=server.ssh_port,
+            ssh_user=server.ssh_user,
+            ssh_password=server.get_password(),
+            remote_port=25565,
+            local_port=0  # Автоматический выбор
+        )
+        
+        if result['success']:
+            logger.info(f'User {current_user.username} started tunnel for {server.name}: {result["connect_string"]}')
+            return jsonify({
+                'success': True,
+                'local_port': result['local_port'],
+                'connect_string': result['connect_string']
+            })
+        else:
+            logger.error(f'Failed to start tunnel for {server.name}: {result.get("error")}')
+            return jsonify({'success': False, 'error': result.get('error', 'Unknown error')}), 400
+            
+    except Exception as e:
+        logger.error(f'Tunnel start error for {server.name}: {str(e)}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/server/<int:server_id>/tunnel/stop', methods=['POST'])
+@login_required
+def stop_tunnel(server_id):
+    server = get_server_or_404(server_id)
+    try:
+        result = close_ssh_tunnel(server.name)
+        
+        if result['success']:
+            logger.info(f'User {current_user.username} stopped tunnel for {server.name}')
+            return jsonify({'success': True})
+        else:
+            return jsonify({'success': False, 'error': result.get('error', 'Unknown error')}), 400
+            
+    except Exception as e:
+        logger.error(f'Tunnel stop error for {server.name}: {str(e)}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/server/<int:server_id>/tunnel/status')
+@login_required
+def tunnel_status(server_id):
+    server = get_server_or_404(server_id)
+    try:
+        status = get_tunnel_status(server.name)
+        return jsonify(status)
+    except Exception as e:
+        return jsonify({'active': False, 'error': str(e)}), 500
+
+# ------------------------------------------------------------
+# Cloudflare DNS и Tunnel
+# ------------------------------------------------------------
+@app.route('/server/<int:server_id>/cloudflare/test-config')
+@login_required
+def test_cloudflare_config(server_id):
+    """Проверяет конфигурацию Cloudflare API"""
+    result = {
+        'configured': all([Config.CLOUDFLARE_API_KEY, Config.CLOUDFLARE_EMAIL, Config.CLOUDFLARE_ZONE_ID, Config.CLOUDFLARE_DOMAIN]),
+        'api_key_set': bool(Config.CLOUDFLARE_API_KEY),
+        'email_set': bool(Config.CLOUDFLARE_EMAIL),
+        'zone_id_set': bool(Config.CLOUDFLARE_ZONE_ID),
+        'domain_set': bool(Config.CLOUDFLARE_DOMAIN),
+        'zone_id': Config.CLOUDFLARE_ZONE_ID,
+        'domain': Config.CLOUDFLARE_DOMAIN
+    }
+    
+    # Пробуем сделать запрос к API
+    if result['configured']:
+        test_result = cloudflare_api_request('GET', '/')
+        result['api_working'] = test_result.get('success', False)
+        if not test_result.get('success'):
+            result['api_error'] = test_result.get('error', 'Unknown')
+    else:
+        result['api_working'] = False
+        result['api_error'] = 'API credentials not configured'
+    
+    return jsonify(result)
+
+@app.route('/server/<int:server_id>/cloudflare/setup', methods=['POST'])
+@login_required
+def setup_cloudflare(server_id):
+    server = get_server_or_404(server_id)
+    try:
+        # Создаём DNS запись
+        dns_result = create_cloudflare_dns(server.name)
+        if not dns_result['success']:
+            return jsonify({'success': False, 'error': dns_result['error']}), 400
+        
+        # Подключаемся к серверу и настраиваем cloudflared
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
+        
+        # Получаем порты сервера
+        ports = get_server_ports_from_properties(
+            server.ssh_host, server.ssh_port, 
+            server.ssh_user, server.get_password(), 
+            server.name
+        )
+        
+        if not ports:
+            ports = [
+                {'port': 25565, 'service': 'Minecraft'},
+                {'port': 25575, 'service': 'RCON'},
+                {'port': 25566, 'service': 'Query'},
+            ]
+        
+        # Создаём список локальных портов (все 0 для автовыбора)
+        local_ports = [(p['port'], 0) for p in ports]
+        
+        # Настраиваем cloudflared
+        setup_result = setup_cloudflared_on_server(client, server.name, server.ssh_user, local_ports)
+        if not setup_result['success']:
+            client.close()
+            error_msg = setup_result.get('error', 'Unknown error')
+            # Показываем более понятное сообщение
+            if 'API Error' in error_msg or 'authentication' in error_msg.lower():
+                error_msg = 'Ошибка аутентификации Cloudflare API. Проверьте API Key и Token в настройках.'
+            elif 'credentials' in error_msg.lower():
+                error_msg = 'Не удалось создать credentials tunnel. Проверьте права API Token.'
+            return jsonify({'success': False, 'error': error_msg}), 400
+        
+        # Сохраняем поддомен в базе
+        server.domain = dns_result['subdomain']
+        db.session.commit()
+        
+        client.close()
+        
+        logger.info(f'User {current_user.username} setup Cloudflare for {server.name}: {dns_result["subdomain"]}')
+        
+        return jsonify({
+            'success': True,
+            'subdomain': dns_result['subdomain'],
+            'tunnel_dir': setup_result['tunnel_dir'],
+            'tunnel_name': setup_result.get('tunnel_name', '')
+        }), 200
+        
+    except Exception as e:
+        logger.error(f'Cloudflare setup error for {server.name}: {str(e)}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/server/<int:server_id>/cloudflare/start', methods=['POST'])
+@login_required
+def start_cloudflare_tunnel(server_id):
+    server = get_server_or_404(server_id)
+    try:
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
+        result = start_cloudflared_tunnel(client, server.name, server.ssh_user)
+        client.close()
+        
+        if result['success']:
+            logger.info(f'User {current_user.username} started Cloudflare tunnel for {server.name}')
+            return jsonify({'success': True, 'log': result.get('log', '')})
+        else:
+            return jsonify({'success': False, 'error': result.get('error', 'Unknown error')}), 400
+            
+    except Exception as e:
+        logger.error(f'Cloudflare start error for {server.name}: {str(e)}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/server/<int:server_id>/cloudflare/stop', methods=['POST'])
+@login_required
+def stop_cloudflare_tunnel(server_id):
+    server = get_server_or_404(server_id)
+    try:
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
+        result = stop_cloudflared_tunnel(client, server.name, server.ssh_user)
+        client.close()
+        
+        if result['success']:
+            logger.info(f'User {current_user.username} stopped Cloudflare tunnel for {server.name}')
+            return jsonify({'success': True})
+        else:
+            return jsonify({'success': False, 'error': result.get('error', 'Unknown error')}), 400
+            
+    except Exception as e:
+        logger.error(f'Cloudflare stop error for {server.name}: {str(e)}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/server/<int:server_id>/cloudflare/status')
+@login_required
+def cloudflare_tunnel_status(server_id):
+    server = get_server_or_404(server_id)
+    try:
+        # Проверяем DNS запись
+        subdomain = server.name.lower().replace(' ', '-')
+        dns_status = get_cloudflare_dns(subdomain)
+        
+        # Проверяем запущен ли tunnel на сервере
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
+        out, err, code = execute_command(client, "pgrep -f 'cloudflared tunnel'", timeout=5)
+        tunnel_running = code == 0 and out.strip()
+        client.close()
+        
+        return jsonify({
+            'dns_configured': dns_status.get('exists', False),
+            'subdomain': f"{subdomain}.{Config.CLOUDFLARE_DOMAIN}" if Config.CLOUDFLARE_DOMAIN else '',
+            'tunnel_running': tunnel_running
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/server/<int:server_id>/cloudflare/delete', methods=['POST'])
+@login_required
+def delete_cloudflare(server_id):
+    server = get_server_or_404(server_id)
+    try:
+        # Останавливаем tunnel
+        client = ssh_connect(server.ssh_host, server.ssh_port, server.ssh_user, server.get_password())
+        stop_cloudflared_tunnel(client, server.name, server.ssh_user)
+        client.close()
+        
+        # Удаляем DNS запись
+        dns_result = delete_cloudflare_dns(server.name)
+        
+        # Очищаем domain в базе
+        server.domain = None
+        db.session.commit()
+        
+        logger.info(f'User {current_user.username} deleted Cloudflare config for {server.name}')
+        
+        return jsonify({'success': True})
+        
+    except Exception as e:
+        logger.error(f'Cloudflare delete error for {server.name}: {str(e)}')
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/server/<int:server_id>/domain', methods=['GET', 'POST'])
 @login_required

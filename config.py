@@ -25,3 +25,5 @@ class Config:
     COMPRESS_MIMETYPES = ['text/html', 'text/css', 'text/javascript', 'application/javascript', 'application/json']
     COMPRESS_LEVEL = 6
     COMPRESS_MIN_SIZE = 500
+    
+    # Cloudflare API Configuration

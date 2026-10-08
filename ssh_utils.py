@@ -10,6 +10,8 @@ import json
 import re
 import logging
 
+from config import Config
+
 # Настройка логгера для ssh_utils
 logger = logging.getLogger('ssh_utils')
 logger.setLevel(logging.INFO)
@@ -1432,6 +1434,233 @@ max-world-size=29999984
     start_server_via_nohup(client, server_name, password, java_path, memory_mb)
     return True
 
+# ---------- SSH туннелирование портов (как Proxima Tunnel) ----------
+# Глобальное хранилище активных туннелей: {server_name: tunnel_data}
+_active_tunnels = {}
+
+def get_server_ports_from_properties(ssh_host, ssh_port, ssh_user, ssh_password, server_name):
+    """
+    Подключается к серверу и получает все порты из server.properties.
+    Возвращает список портов для проброса.
+    """
+    try:
+        client = ssh_connect(ssh_host, ssh_port, ssh_user, ssh_password)
+        props = read_server_properties(client, server_name)
+        client.close()
+        
+        main_port = int(props.get('server-port', 25565))
+        rcon_port = int(props.get('rcon.port', 25575))
+        query_port = int(props.get('query.port', 25566))
+        
+        ports = [
+            {'port': main_port, 'service': 'Minecraft', 'default_local': None},
+            {'port': rcon_port, 'service': 'RCON', 'default_local': None},
+            {'port': query_port, 'service': 'Query', 'default_local': None},
+        ]
+        
+        return ports
+        
+    except Exception as e:
+        logger.error(f'Ошибка получения портов для {server_name}: {str(e)}')
+        return None
+
+def create_ssh_tunnel(server_name, ssh_host, ssh_port, ssh_user, ssh_password, local_ports=None):
+    """
+    Создаёт SSH-туннель для всех портов Minecraft-сервера (как Proxima Tunnel).
+    
+    local_ports - список локальных портов для каждого сервиса [minecraft_port, rcon_port, query_port]
+    Если None, автоматически выбирает свободные порты.
+    
+    Returns: {'success': True, 'tunnels': [...]} или {'success': False, 'error': str}
+    """
+    global _active_tunnels
+    
+    if server_name in _active_tunnels and _active_tunnels[server_name].get('active'):
+        return {'success': False, 'error': 'Туннель уже активен для этого сервера'}
+    
+    try:
+        import socket
+        
+        # Подключаемся по SSH
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(
+            hostname=ssh_host,
+            port=ssh_port,
+            username=ssh_user,
+            password=ssh_password,
+            timeout=30,
+            allow_agent=False,
+            look_for_keys=False
+        )
+        
+        transport = client.get_transport()
+        if transport is None:
+            client.close()
+            return {'success': False, 'error': 'SSH transport не доступен'}
+        
+        # Определяем порты сервера
+        server_ports = get_server_ports_from_properties(ssh_host, ssh_port, ssh_user, ssh_password, server_name)
+        if not server_ports:
+            # Fallback: стандартные порты
+            server_ports = [
+                {'port': 25565, 'service': 'Minecraft', 'default_local': None},
+                {'port': 25575, 'service': 'RCON', 'default_local': None},
+                {'port': 25566, 'service': 'Query', 'default_local': None},
+            ]
+        
+        # Создаём список туннелей
+        tunnels = []
+        server_sockets = []
+        channels = []
+        
+        for idx, port_info in enumerate(server_ports):
+            remote_port = port_info['port']
+            service = port_info['service']
+            
+            # Определяем локальный порт
+            if local_ports and idx < len(local_ports) and local_ports[idx]:
+                local_port = local_ports[idx]
+            else:
+                # Автоматический выбор свободного порта
+                local_port = 0
+            
+            if local_port == 0:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.bind(('127.0.0.1', 0))
+                local_port = sock.getsockname()[1]
+                sock.close()
+            
+            # Проверяем что локальный порт свободен
+            test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            result = test_sock.connect_ex(('127.0.0.1', local_port))
+            test_sock.close()
+            if result == 0:
+                # Очищаем созданные туннели при ошибке
+                for s in server_sockets:
+                    try:
+                        s.close()
+                    except:
+                        pass
+                client.close()
+                return {'success': False, 'error': f'Локальный порт {local_port} (для {service}) уже занят'}
+            
+            # Создаём канал SSH для этого порта
+            channel = transport.open_channel(
+                'direct-tcpip',
+                ('127.0.0.1', remote_port),
+                ('127.0.0.1', 0)
+            )
+            
+            if channel is None:
+                for s in server_sockets:
+                    try:
+                        s.close()
+                    except:
+                        pass
+                client.close()
+                return {'success': False, 'error': f'Не удалось создать канал для {service} (порт {remote_port})'}
+            
+            # Запускаем TCP-сервер на локальном порту
+            server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server_socket.bind(('127.0.0.1', local_port))
+            server_socket.listen(5)
+            server_socket.settimeout(1.0)
+            
+            tunnels.append({
+                'remote_port': remote_port,
+                'local_port': local_port,
+                'service': service,
+                'connect_string': f'localhost:{local_port}'
+            })
+            
+            server_sockets.append(server_socket)
+            channels.append(channel)
+            
+            logger.info(f'[{server_name}] Туннель {service}: localhost:{local_port} -> 127.0.0.1:{remote_port}')
+        
+        # Сохраняем состояние туннеля
+        _active_tunnels[server_name] = {
+            'client': client,
+            'transport': transport,
+            'channels': channels,
+            'server_sockets': server_sockets,
+            'tunnels': tunnels,
+            'active': True
+        }
+        
+        return {
+            'success': True,
+            'tunnels': tunnels
+        }
+        
+    except paramiko.AuthenticationException:
+        return {'success': False, 'error': 'Ошибка аутентификации по SSH'}
+    except paramiko.SSHException as e:
+        return {'success': False, 'error': f'Ошибка SSH: {str(e)}'}
+    except Exception as e:
+        return {'success': False, 'error': f'Ошибка создания туннеля: {str(e)}'}
+
+def close_ssh_tunnel(server_name):
+    """
+    Закрывает все туннели для указанного сервера.
+    """
+    global _active_tunnels
+    
+    if server_name not in _active_tunnels:
+        return {'success': False, 'error': 'Туннель не найден'}
+    
+    try:
+        tunnel = _active_tunnels[server_name]
+        
+        # Помечаем как неактивный
+        tunnel['active'] = False
+        
+        # Закрываем все сервер-сокеты
+        for server_socket in tunnel.get('server_sockets', []):
+            try:
+                server_socket.close()
+            except:
+                pass
+        
+        # Закрываем все каналы
+        for channel in tunnel.get('channels', []):
+            try:
+                channel.close()
+            except:
+                pass
+        
+        # Закрываем SSH клиент
+        try:
+            tunnel['client'].close()
+        except:
+            pass
+        
+        # Удаляем из хранилища
+        del _active_tunnels[server_name]
+        
+        logger.info(f'[{server_name}] Все SSH-туннели закрыты')
+        return {'success': True}
+        
+    except Exception as e:
+        logger.error(f'Ошибка закрытия туннеля [{server_name}]: {str(e)}')
+        return {'success': False, 'error': str(e)}
+
+def get_tunnel_status(server_name):
+    """
+    Возвращает статус всех туннелей для сервера.
+    """
+    global _active_tunnels
+    
+    if server_name in _active_tunnels:
+        tunnel = _active_tunnels[server_name]
+        return {
+            'active': tunnel['active'],
+            'tunnels': tunnel.get('tunnels', [])
+        }
+    return {'active': False}
+
 # ---------- Системная статистика ----------
 def get_system_stats(client):
     stats = {'cpu_percent': 0.0, 'ram_total_mb': 0, 'ram_used_mb': 0, 'ram_percent': 0.0}
@@ -1612,3 +1841,410 @@ def get_host_system_stats(client):
         logger.error(f'Ошибка получения статистики хоста: {str(e)}')
     
     return stats
+
+# ---------- Cloudflare DNS и Tunnel ----------
+def cloudflare_api_request(method, endpoint, data=None):
+    """
+    Отправляет запрос к Cloudflare API с retry
+    """
+    if not all([Config.CLOUDFLARE_API_KEY, Config.CLOUDFLARE_EMAIL, Config.CLOUDFLARE_ZONE_ID]):
+        return {'success': False, 'error': 'Cloudflare API credentials not configured'}
+    
+    url = f"https://api.cloudflare.com/client/v4/zones/{Config.CLOUDFLARE_ZONE_ID}{endpoint}"
+    headers = {
+        'Authorization': f'Bearer {Config.CLOUDFLARE_API_KEY}',
+        'Content-Type': 'application/json'
+    }
+    
+    # Retry configuration
+    max_retries = 3
+    retry_delay = 2  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            if method == 'GET':
+                resp = requests.get(url, headers=headers, timeout=60)
+            elif method == 'POST':
+                resp = requests.post(url, headers=headers, json=data, timeout=60)
+            elif method == 'PUT':
+                resp = requests.put(url, headers=headers, json=data, timeout=60)
+            elif method == 'DELETE':
+                resp = requests.delete(url, headers=headers, timeout=60)
+            else:
+                return {'success': False, 'error': f'Unsupported method: {method}'}
+            
+            if resp.status_code == 401:
+                return {'success': False, 'error': 'API аутентификация не удалась. Проверьте API Key и Email.'}
+            elif resp.status_code == 403:
+                return {'success': False, 'error': 'Нет доступа к Zone. Проверьте права API Token.'}
+            elif resp.status_code == 404:
+                return {'success': False, 'error': f'Zone не найден. Проверьте Zone ID: {Config.CLOUDFLARE_ZONE_ID}'}
+            elif resp.status_code != 200:
+                error_detail = resp.text[:500] if resp.text else 'No response'
+                logger.error(f'[CLOUDFLARE API] HTTP {resp.status_code}: {error_detail}')
+                return {'success': False, 'error': f'HTTP {resp.status_code}: {error_detail}'}
+            
+            return resp.json()
+            
+        except requests.exceptions.Timeout as e:
+            if attempt < max_retries - 1:
+                logger.warning(f'[CLOUDFLARE API] Timeout attempt {attempt+1}/{max_retries}. Retrying in {retry_delay}s...')
+                time.sleep(retry_delay)
+                continue
+            else:
+                logger.error(f'[CLOUDFLARE API] Timeout after {max_retries} attempts: {str(e)}')
+                return {'success': False, 'error': f'Timeout подключения к Cloudflare API после {max_retries} попыток. Проверьте сетевое соединение.'}
+                
+        except requests.exceptions.ConnectionError as e:
+            if attempt < max_retries - 1:
+                logger.warning(f'[CLOUDFLARE API] Connection error attempt {attempt+1}/{max_retries}. Retrying in {retry_delay}s...')
+                time.sleep(retry_delay)
+                continue
+            else:
+                logger.error(f'[CLOUDFLARE API] Connection error after {max_retries} attempts: {str(e)}')
+                return {'success': False, 'error': f'Не удалось подключиться к Cloudflare API после {max_retries} попыток. Проверьте сетевое соединение.'}
+                
+        except Exception as e:
+            logger.error(f'[CLOUDFLARE API] Error: {str(e)}')
+            return {'success': False, 'error': f'Request failed: {str(e)}'}
+    
+    return {'success': False, 'error': 'Max retries exceeded'}
+
+def create_cloudflare_dns(server_name, subdomain=None):
+    """
+    Создаёт DNS запись A для поддомена сервера
+    Возвращает: {'success': True, 'subdomain': 'server.example.com'} или {'success': False, 'error': str}
+    """
+    if not all([Config.CLOUDFLARE_API_KEY, Config.CLOUDFLARE_EMAIL, Config.CLOUDFLARE_ZONE_ID]):
+        return {'success': False, 'error': 'Cloudflare API credentials not configured'}
+    
+    if not subdomain:
+        # Генерируем поддомен из имени сервера
+        subdomain = server_name.lower().replace(' ', '-')
+    
+    domain = Config.CLOUDFLARE_DOMAIN
+    full_domain = f"{subdomain}.{domain}"
+    tunnel_name = f"{server_name.lower().replace(' ', '-')}-tunnel"
+    
+    # Проверяем существует ли уже запись
+    check_result = get_cloudflare_dns(full_domain)
+    if check_result.get('success'):
+        return {
+            'success': True,
+            'subdomain': full_domain,
+            'existing': True,
+            'content': check_result.get('content')
+        }
+    
+    # Создаём DNS запись (указываем tunnel name)
+    data = {
+        'type': 'CNAME',
+        'name': subdomain,
+        'content': f'{tunnel_name}.cfargotunnel.com',
+        'ttl': 1,  # Auto
+        'proxied': False  # Для TCP туннелей proxied должен быть False
+    }
+    
+    result = cloudflare_api_request('POST', '/dns_records', data)
+    
+    if result.get('success'):
+        logger.info(f'[CLOUDFLARE] Создана DNS запись: {full_domain} -> {subdomain}.cfargotunnel.com')
+        return {
+            'success': True,
+            'subdomain': full_domain,
+            'existing': False
+        }
+    else:
+        return {'success': False, 'error': result.get('error', 'Unknown error')}
+
+def get_cloudflare_dns(subdomain):
+    """
+    Проверяет существование DNS записи
+    """
+    if not all([Config.CLOUDFLARE_API_KEY, Config.CLOUDFLARE_EMAIL, Config.CLOUDFLARE_ZONE_ID]):
+        return {'success': False, 'error': 'Cloudflare API credentials not configured'}
+    
+    domain = Config.CLOUDFLARE_DOMAIN
+    
+    result = cloudflare_api_request('GET', f'/dns_records?type=CNAME&name={subdomain}.{domain}')
+    
+    if result.get('success') and result.get('result'):
+        records = result['result']
+        if records:
+            return {
+                'success': True,
+                'exists': True,
+                'id': records[0]['id'],
+                'content': records[0]['content'],
+                'subdomain': f"{subdomain}.{domain}"
+            }
+    
+    return {'success': True, 'exists': False}
+
+def delete_cloudflare_dns(server_name):
+    """
+    Удаляет DNS запись для поддомена сервера
+    """
+    if not all([Config.CLOUDFLARE_API_KEY, Config.CLOUDFLARE_EMAIL, Config.CLOUDFLARE_ZONE_ID]):
+        return {'success': False, 'error': 'Cloudflare API credentials not configured'}
+    
+    subdomain = server_name.lower().replace(' ', '-')
+    check = get_cloudflare_dns(subdomain)
+    
+    if check.get('success') and check.get('exists'):
+        result = cloudflare_api_request('DELETE', f"/dns_records/{check['id']}")
+        if result.get('success'):
+            logger.info(f'[CLOUDFLARE] Удалена DNS запись: {subdomain}.{Config.CLOUDFLARE_DOMAIN}')
+            return {'success': True}
+        else:
+            return {'success': False, 'error': result.get('error', 'Unknown error')}
+    
+    return {'success': True, 'already_deleted': True}
+
+def create_cloudflare_tunnel_api(tunnel_name):
+    """
+    Создаёт tunnel через Cloudflare API и возвращает credentials
+    Сначала удаляет существующий tunnel с таким именем если есть
+    """
+    if not all([Config.CLOUDFLARE_API_KEY, Config.CLOUDFLARE_ZONE_ID]):
+        return {'success': False, 'error': 'Cloudflare API credentials not configured'}
+    
+    # Ищем существующий tunnel с таким именем
+    list_result = cloudflare_api_request('GET', '/tunnels')
+    
+    existing_tunnel_id = None
+    if list_result.get('success') and list_result.get('result'):
+        for tunnel in list_result['result']:
+            if tunnel['name'] == tunnel_name:
+                existing_tunnel_id = tunnel['id']
+                logger.info(f'[CLOUDFLARE] Найден существующий tunnel: {tunnel_name} (ID: {existing_tunnel_id})')
+                break
+    
+    # Удаляем существующий tunnel если есть
+    if existing_tunnel_id:
+        logger.info(f'[CLOUDFLARE] Удаление существующего tunnel {tunnel_name}...')
+        delete_result = cloudflare_api_request('DELETE', f'/tunnels/{existing_tunnel_id}')
+        if delete_result.get('success'):
+            logger.info(f'[CLOUDFLARE] Tunnel {tunnel_name} удалён')
+        else:
+            logger.warning(f'[CLOUDFLARE] Не удалось удалить tunnel: {delete_result}')
+    
+    # Создаём новый tunnel
+    data = {'name': tunnel_name}
+    logger.info(f'[CLOUDFLARE API] Создание tunnel {tunnel_name}...')
+    result = cloudflare_api_request('POST', '/tunnels', data)
+    
+    if not result.get('success'):
+        error_msg = 'Unknown error'
+        if result.get('errors'):
+            error_msg = result['errors'][0].get('message', str(result['errors']))
+        logger.error(f'[CLOUDFLARE API] Ошибка создания tunnel: {error_msg}')
+        logger.error(f'[CLOUDFLARE API] Response: {result}')
+        return {'success': False, 'error': f'API Error: {error_msg}'}
+    
+    tunnel_id = result['result']['id']
+    logger.info(f'[CLOUDFLARE] Tunnel создан: {tunnel_name} (ID: {tunnel_id})')
+    
+    # Получаем credentials (token)
+    creds_result = cloudflare_api_request('GET', f'/tunnels/{tunnel_id}/credentials')
+    
+    if not creds_result.get('success'):
+        return {'success': False, 'error': 'Не удалось получить credentials tunnel'}
+    
+    return {
+        'success': True,
+        'tunnel_id': tunnel_id,
+        'credentials': creds_result['result']
+    }
+
+def setup_cloudflared_on_server(client, server_name, ssh_user, local_ports):
+    """
+    Устанавливает и настраивает cloudflared на удалённом сервере для проброса портов
+    local_ports - список кортежей [(remote_port, local_port), ...]
+    """
+    server_dir = f"/home/{ssh_user}/minecraft_servers/{server_name}"
+    tunnel_dir = f"{server_dir}/cloudflared"
+    
+    subdomain = server_name.lower().replace(' ', '-')
+    tunnel_name = f"{server_name}-tunnel"
+    
+    try:
+        # Проверяем установлен ли cloudflared
+        out, err, code = execute_command(client, "which cloudflared", timeout=5)
+        if code != 0:
+            logger.info(f'[{server_name}] Установка cloudflared...')
+            # Скачиваем cloudflared
+            execute_command(client, "wget -O /tmp/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64", timeout=30)
+            execute_command(client, "chmod +x /tmp/cloudflared")
+            execute_command(client, f"sudo cp /tmp/cloudflared /usr/local/bin/cloudflared")
+            execute_command(client, "rm -f /tmp/cloudflared")
+        
+        # Создаём директорию для tunnel
+        execute_command(client, f"mkdir -p {tunnel_dir}")
+        
+        # Проверяем есть ли уже credentials
+        check_creds = f"test -f {tunnel_dir}/tunnel.json && echo 'EXISTS' || echo 'NOT_FOUND'"
+        creds_out, _, creds_code = execute_command(client, check_creds, timeout=3)
+        
+        if creds_code == 0 and 'EXISTS' in creds_out:
+            logger.info(f'[{server_name}] Credentials уже существуют, пропускаем создание tunnel')
+            # Просто создаём config
+            config_file = f"{tunnel_dir}/config.yml"
+            config_content = f"tunnel: {tunnel_name}\ncredentials-file: {tunnel_dir}/tunnel.json\nmetrics: localhost:2000\nno-autoupdate: true\nlogfile: {tunnel_dir}/cloudflared.log\ningress:\n"
+            
+            for remote_port, local_port in local_ports:
+                config_content += f"  - hostname: {subdomain}.{Config.CLOUDFLARE_DOMAIN}\n"
+                config_content += f"    service: tcp://localhost:{local_port}\n"
+            config_content += f"  - service: tcp://localhost:4040\n"
+            
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', delete=False) as tmp:
+                tmp.write(config_content)
+                tmp_path = tmp.name
+            
+            sftp = client.open_sftp()
+            sftp.put(tmp_path, config_file)
+            sftp.close()
+            os.remove(tmp_path)
+            
+            logger.info(f'[{server_name}] Конфигурация cloudflared создана: {config_file}')
+            
+            return {
+                'success': True,
+                'tunnel_dir': tunnel_dir,
+                'config_file': config_file,
+                'subdomain': f"{subdomain}.{Config.CLOUDFLARE_DOMAIN}",
+                'tunnel_name': tunnel_name,
+                'manual_setup': True  # Флаг что настройка была ручная
+            }
+        
+        # Создаём конфигурацию tunnel
+        config_file = f"{tunnel_dir}/config.yml"
+        config_content = f"tunnel: {tunnel_name}\ncredentials-file: {tunnel_dir}/tunnel.json\nmetrics: localhost:2000\nno-autoupdate: true\nlogfile: {tunnel_dir}/cloudflared.log\ningress:\n"
+        
+        for remote_port, local_port in local_ports:
+            config_content += f"  - hostname: {subdomain}.{Config.CLOUDFLARE_DOMAIN}\n"
+            config_content += f"    service: tcp://localhost:{local_port}\n"
+        config_content += f"  - service: tcp://localhost:4040\n"
+        
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', delete=False) as tmp:
+            tmp.write(config_content)
+            tmp_path = tmp.name
+        
+        sftp = client.open_sftp()
+        sftp.put(tmp_path, config_file)
+        sftp.close()
+        os.remove(tmp_path)
+        
+        logger.info(f'[{server_name}] Конфигурация cloudflared создана: {config_file}')
+        
+        # Создаём tunnel через cloudflared (это создаст credentials файл)
+        logger.info(f'[{server_name}] Создание tunnel через cloudflared...')
+        create_tunnel_cmd = f"cd {tunnel_dir} && cloudflared tunnel --config {config_file} create {tunnel_name}"
+        out, err, code = execute_command(client, create_tunnel_cmd, timeout=10)
+        
+        if code != 0:
+            logger.warning(f'[{server_name}] Не удалось создать tunnel автоматически: {err}')
+            logger.info(f'[{server_name}] Создаём tunnel через Cloudflare API...')
+            
+            # Создаём tunnel через API
+            tunnel_result = create_cloudflare_tunnel_api(tunnel_name)
+            if tunnel_result['success']:
+                # Сохраняем credentials
+                credentials_json = json.dumps(tunnel_result['credentials'], indent=2)
+                creds_file = f"{tunnel_dir}/tunnel.json"
+                with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', delete=False) as tmp:
+                    tmp.write(credentials_json)
+                    tmp_path = tmp.name
+                
+                sftp = client.open_sftp()
+                sftp.put(tmp_path, creds_file)
+                sftp.close()
+                os.remove(tmp_path)
+                
+                logger.info(f'[{server_name}] Tunnel создан через API, credentials сохранены')
+            else:
+                error_msg = tunnel_result.get('error', 'Unknown error')
+                logger.error(f'[{server_name}] Ошибка создания tunnel через API: {error_msg}')
+                return {
+                    'success': False,
+                    'error': f'Не удалось создать tunnel: {error_msg}'
+                }
+        
+        return {
+            'success': True,
+            'tunnel_dir': tunnel_dir,
+            'config_file': config_file,
+            'subdomain': f"{subdomain}.{Config.CLOUDFLARE_DOMAIN}",
+            'tunnel_name': tunnel_name
+        }
+        
+    except Exception as e:
+        logger.error(f'Ошибка настройки cloudflared для {server_name}: {str(e)}')
+        return {'success': False, 'error': str(e)}
+
+def start_cloudflared_tunnel(client, server_name, ssh_user):
+    """
+    Запускает cloudflared tunnel на удалённом сервере
+    """
+    server_dir = f"/home/{ssh_user}/minecraft_servers/{server_name}"
+    tunnel_dir = f"{server_dir}/cloudflared"
+    config_file = f"{tunnel_dir}/config.yml"
+    
+    try:
+        # Проверяем существует ли конфигурация
+        check_cmd = f"test -f {config_file}"
+        _, _, code = execute_command(client, check_cmd, timeout=5)
+        if code != 0:
+            return {'success': False, 'error': 'Конфигурация cloudflared не найдена. Сначала выполните setup.'}
+        
+        # Проверяем запущен ли уже tunnel
+        check_running = "pgrep -f 'cloudflared tunnel'"
+        out, _, code = execute_command(client, check_running, timeout=5)
+        if code == 0 and out.strip():
+            return {'success': False, 'error': 'Tunnel уже запущен'}
+        
+        # Останавливаем старый tunnel если есть
+        execute_command(client, "pkill -9 -f 'cloudflared tunnel'", timeout=3)
+        time.sleep(1)
+        
+        # Запускаем tunnel в фоне с явным указанием имени
+        tunnel_name = server_name.lower().replace(' ', '-')
+        start_cmd = f"cd {tunnel_dir} && nohup cloudflared --config {config_file} tunnel --loglevel info run --name {tunnel_name} > {tunnel_dir}/tunnel.log 2>&1 & echo $!"
+        out, err, code = execute_command(client, start_cmd, timeout=5)
+        
+        pid = out.strip()
+        logger.info(f'[{server_name}] Cloudflared запущен с PID: {pid}')
+        
+        time.sleep(5)  # Ждём подключения
+        
+        # Проверяем что запустился
+        out, err, code = execute_command(client, f"tail -n 50 {tunnel_dir}/tunnel.log", timeout=5)
+        logger.info(f'[{server_name}] Tunnel log:\n{out}')
+        
+        if 'connected' in out.lower() or 'starting' in out.lower() or 'info' in out.lower():
+            logger.info(f'[{server_name}] Cloudflared tunnel запущен')
+            return {'success': True, 'log': out}
+        else:
+            logger.error(f'[{server_name}] Tunnel failed: {err or out}')
+            return {'success': False, 'error': f'Tunnel failed to start:\n{err or out}'}
+        
+    except Exception as e:
+        logger.error(f'Ошибка запуска cloudflared tunnel для {server_name}: {str(e)}')
+        return {'success': False, 'error': str(e)}
+
+def stop_cloudflared_tunnel(client, server_name, ssh_user):
+    """
+    Останавливает cloudflared tunnel на удалённом сервере
+    """
+    try:
+        # Останавливаем tunnel
+        execute_command(client, "pkill -f 'cloudflared tunnel'", timeout=5)
+        time.sleep(2)
+        execute_command(client, "pkill -9 -f 'cloudflared tunnel'", timeout=5)
+        
+        logger.info(f'[{server_name}] Cloudflared tunnel остановлен')
+        return {'success': True}
+        
+    except Exception as e:
+        logger.error(f'Ошибка остановки cloudflared tunnel для {server_name}: {str(e)}')
+        return {'success': False, 'error': str(e)}

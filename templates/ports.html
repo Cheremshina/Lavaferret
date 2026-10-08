@@ -3,6 +3,100 @@
 {% block content %}
 <h2>Порты сервера {{ server.name }}</h2>
 
+<!-- Cloudflare Tunnel -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">
+            <i class="bi bi-cloud"></i> Cloudflare Tunnel (поддомен)
+        </h5>
+    </div>
+    <div class="card-body">
+        <p class="text-muted">
+            Автоматическое создание поддомена через Cloudflare API. 
+            Подключайтесь через <code>server-name.yourdomain.com</code> – не нужно открывать порты на роутере.
+        </p>
+        
+        <div id="cloudflare-status" class="mb-3">
+            <!-- Статус загрузится через AJAX -->
+            <span class="text-muted">Проверка статуса...</span>
+        </div>
+        
+        <div class="d-flex gap-2 flex-wrap">
+            <button type="button" class="btn btn-info" id="btn-test-config" onclick="testConfig()">
+                <i class="bi bi-clipboard-check"></i> Проверить конфигурацию
+            </button>
+            <button type="button" class="btn btn-success" id="btn-setup-cloudflare" onclick="setupCloudflare()">
+                <i class="bi bi-gear"></i> Настроить Cloudflare
+            </button>
+            <button type="button" class="btn btn-primary" id="btn-start-cloudflare" onclick="startCloudflareTunnel()" style="display:none;">
+                <i class="bi bi-play-circle"></i> Запустить Tunnel
+            </button>
+            <button type="button" class="btn btn-danger" id="btn-stop-cloudflare" onclick="stopCloudflareTunnel()" style="display:none;">
+                <i class="bi bi-stop-circle"></i> Остановить Tunnel
+            </button>
+            <button type="button" class="btn btn-outline-danger" id="btn-delete-cloudflare" onclick="deleteCloudflare()" style="display:none;">
+                <i class="bi bi-trash"></i> Удалить
+            </button>
+        </div>
+        
+        <div id="cloudflare-info" class="mt-3" style="display:none;">
+            <div class="alert alert-info">
+                <strong>Поддомен:</strong>
+                <code id="cloudflare-subdomain" class="fs-5"></code>
+                <button type="button" class="btn btn-sm btn-outline-primary ms-2" onclick="copySubdomain()">
+                    Копировать
+                </button>
+            </div>
+            <small class="text-muted">
+                Используйте <code id="cloudflare-connect-hint"></code> как адрес сервера в Minecraft.
+            </small>
+        </div>
+    </div>
+</div>
+
+<!-- SSH Туннель -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">
+            <i class="bi bi-arrow-left-right"></i> SSH-туннель (локальный)
+        </h5>
+    </div>
+    <div class="card-body">
+        <p class="text-muted">
+            Подключайтесь к серверу через <code>localhost</code> – не нужно открывать порты на роутере.
+        </p>
+        
+        <div id="tunnel-status" class="mb-3">
+            <!-- Статус туннеля загрузится через AJAX -->
+            <span class="text-muted">Проверка статуса...</span>
+        </div>
+        
+        <div class="d-flex gap-2">
+            <button type="button" class="btn btn-success" id="btn-start-tunnel" onclick="startTunnel()">
+                <i class="bi bi-box-arrow-in-down-right"></i> Запустить туннель
+            </button>
+            <button type="button" class="btn btn-danger" id="btn-stop-tunnel" onclick="stopTunnel()" style="display:none;">
+                <i class="bi bi-box-arrow-up-left"></i> Остановить туннель
+            </button>
+        </div>
+        
+        <div id="tunnel-info" class="mt-3" style="display:none;">
+            <div class="alert alert-info">
+                <strong>Подключение:</strong>
+                <code id="connect-string" class="fs-5"></code>
+                <button type="button" class="btn btn-sm btn-outline-primary ms-2" onclick="copyConnectString()">
+                    Копировать
+                </button>
+            </div>
+            <small class="text-muted">
+                Используйте <code>localhost:PORT</code> как адрес сервера в Minecraft.
+            </small>
+        </div>
+    </div>
+</div>
+
+<hr>
+
 <div class="mb-2">
     <label class="form-label">Порт сервера</label>
     <input type="number" name="port" value="{{ port }}" class="form-control" min="1" max="65535">
@@ -20,4 +114,350 @@
     </div>
     <small class="text-muted">Нажмите на порт, чтобы подставить его в поле выше.</small>
 </div>
+
+<script>
+// ============================================
+// Cloudflare Tunnel Functions
+// ============================================
+
+function testConfig() {
+    const btn = document.getElementById('btn-test-config');
+    const statusDiv = document.getElementById('cloudflare-status');
+    
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Проверка...';
+    
+    const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+    fetch('{{ url_for("test_cloudflare_config", server_id=server.id) }}', {
+        method: 'GET'
+    })
+    .then(response => response.json())
+    .then(data => {
+        let msg = '<strong>Конфигурация Cloudflare:</strong><br>';
+        msg += `API Key: ${data.api_key_set ? '✓ Установлен' : '✗ Не установлен'}<br>`;
+        msg += `Email: ${data.email_set ? '✓ Установлен' : '✗ Не установлен'}<br>`;
+        msg += `Zone ID: ${data.zone_id_set ? '✓ ' + data.zone_id : '✗ Не установлен'}<br>`;
+        msg += `Домен: ${data.domain_set ? '✓ ' + data.domain : '✗ Не установлен'}<br>`;
+        msg += `API: ${data.api_working ? '✓ Работает' : '✗ Не работает'}`;
+        
+        if (!data.api_working && data.api_error) {
+            msg += `<br><small class="text-danger">Ошибка: ${data.api_error}</small>`;
+        }
+        
+        statusDiv.innerHTML = msg;
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-clipboard-check"></i> Проверить конфигурацию';
+    })
+    .catch(error => {
+        statusDiv.innerHTML = '<span class="text-danger">✗ Ошибка проверки</span>';
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-clipboard-check"></i> Проверить конфигурацию';
+    });
+}
+
+function setupCloudflare() {
+    const btn = document.getElementById('btn-setup-cloudflare');
+    const statusDiv = document.getElementById('cloudflare-status');
+    
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Настройка...';
+    
+    const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+    fetch('{{ url_for("setup_cloudflare", server_id=server.id) }}', {
+        method: 'POST',
+        headers: {'X-CSRFToken': csrfToken}
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            statusDiv.innerHTML = '<span class="text-success">✓ Cloudflare настроен</span>';
+            btn.style.display = 'none';
+            document.getElementById('btn-start-cloudflare').style.display = 'inline-block';
+            document.getElementById('btn-delete-cloudflare').style.display = 'inline-block';
+            document.getElementById('cloudflare-info').style.display = 'block';
+            document.getElementById('cloudflare-subdomain').textContent = data.subdomain;
+            document.getElementById('cloudflare-connect-hint').textContent = data.subdomain;
+        } else {
+            statusDiv.innerHTML = '<span class="text-danger">✗ ' + data.error + '</span>';
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-gear"></i> Настроить Cloudflare';
+        }
+    })
+    .catch(error => {
+        console.error('Setup Cloudflare error:', error);
+        statusDiv.innerHTML = '<span class="text-danger">✗ Не удалось подключиться к серверу. Проверьте лог app.py.</span>';
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-gear"></i> Настроить Cloudflare';
+    });
+}
+
+function startCloudflareTunnel() {
+    const btn = document.getElementById('btn-start-cloudflare');
+    const btnStop = document.getElementById('btn-stop-cloudflare');
+    const statusDiv = document.getElementById('cloudflare-status');
+    
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Запуск...';
+    
+    const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+    fetch('{{ url_for("start_cloudflare_tunnel", server_id=server.id) }}', {
+        method: 'POST',
+        headers: {'X-CSRFToken': csrfToken}
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            statusDiv.innerHTML = '<span class="text-success">● Cloudflare Tunnel активен</span>';
+            btn.style.display = 'none';
+            btnStop.style.display = 'inline-block';
+        } else {
+            statusDiv.innerHTML = '<span class="text-danger">✗ ' + data.error + '</span>';
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-play-circle"></i> Запустить Tunnel';
+        }
+    })
+    .catch(error => {
+        statusDiv.innerHTML = '<span class="text-danger">✗ Ошибка сети</span>';
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-circle"></i> Запустить Tunnel';
+    });
+}
+
+function stopCloudflareTunnel() {
+    const btnStart = document.getElementById('btn-start-cloudflare');
+    const btnStop = document.getElementById('btn-stop-cloudflare');
+    const statusDiv = document.getElementById('cloudflare-status');
+    
+    btnStop.disabled = true;
+    btnStop.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Остановка...';
+    
+    const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+    fetch('{{ url_for("stop_cloudflare_tunnel", server_id=server.id) }}', {
+        method: 'POST',
+        headers: {'X-CSRFToken': csrfToken}
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            statusDiv.innerHTML = '<span class="text-muted">○ Cloudflare Tunnel остановлен</span>';
+            btnStart.style.display = 'inline-block';
+            btnStart.disabled = false;
+            btnStart.innerHTML = '<i class="bi bi-play-circle"></i> Запустить Tunnel';
+            btnStop.style.display = 'none';
+        } else {
+            btnStop.disabled = false;
+            btnStop.innerHTML = '<i class="bi bi-stop-circle"></i> Остановить Tunnel';
+        }
+    })
+    .catch(error => {
+        btnStop.disabled = false;
+        btnStop.innerHTML = '<i class="bi bi-stop-circle"></i> Остановить Tunnel';
+    });
+}
+
+function deleteCloudflare() {
+    if (!confirm('Удалить Cloudflare конфигурацию и DNS запись?')) return;
+    
+    const btn = document.getElementById('btn-delete-cloudflare');
+    const statusDiv = document.getElementById('cloudflare-status');
+    const infoDiv = document.getElementById('cloudflare-info');
+    
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Удаление...';
+    
+    const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+    fetch('{{ url_for("delete_cloudflare", server_id=server.id) }}', {
+        method: 'POST',
+        headers: {'X-CSRFToken': csrfToken}
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            statusDiv.innerHTML = '<span class="text-muted">○ Cloudflare удалён</span>';
+            document.getElementById('btn-setup-cloudflare').style.display = 'inline-block';
+            document.getElementById('btn-setup-cloudflare').disabled = false;
+            document.getElementById('btn-setup-cloudflare').innerHTML = '<i class="bi bi-gear"></i> Настроить Cloudflare';
+            document.getElementById('btn-start-cloudflare').style.display = 'none';
+            document.getElementById('btn-stop-cloudflare').style.display = 'none';
+            btn.style.display = 'none';
+            infoDiv.style.display = 'none';
+        } else {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-trash"></i> Удалить';
+        }
+    })
+    .catch(error => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-trash"></i> Удалить';
+    });
+}
+
+function copySubdomain() {
+    const text = document.getElementById('cloudflare-subdomain').textContent;
+    navigator.clipboard.writeText(text).then(() => {
+        const btn = event.target;
+        const originalText = btn.textContent;
+        btn.textContent = '✓';
+        setTimeout(() => btn.textContent = originalText, 1500);
+    });
+}
+
+// ============================================
+// SSH Tunnel Functions
+// ============================================
+
+function startTunnel() {
+    const btnStart = document.getElementById('btn-start-tunnel');
+    const btnStop = document.getElementById('btn-stop-tunnel');
+    const statusDiv = document.getElementById('tunnel-status');
+    const infoDiv = document.getElementById('tunnel-info');
+    
+    btnStart.disabled = true;
+    btnStart.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Создание...';
+    
+    const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+    fetch('{{ url_for("start_tunnel", server_id=server.id) }}', {
+        method: 'POST',
+        headers: {'X-CSRFToken': csrfToken}
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            statusDiv.innerHTML = '<span class="text-success">● Туннель активен</span>';
+            btnStart.style.display = 'none';
+            btnStop.style.display = 'inline-block';
+            infoDiv.style.display = 'block';
+            document.getElementById('connect-string').textContent = data.connect_string;
+        } else {
+            statusDiv.innerHTML = '<span class="text-danger">✗ ' + data.error + '</span>';
+            btnStart.disabled = false;
+            btnStart.innerHTML = '<i class="bi bi-box-arrow-in-down-right"></i> Запустить туннель';
+        }
+    })
+    .catch(error => {
+        statusDiv.innerHTML = '<span class="text-danger">✗ Ошибка сети</span>';
+        btnStart.disabled = false;
+        btnStart.innerHTML = '<i class="bi bi-box-arrow-in-down-right"></i> Запустить туннель';
+    });
+}
+
+function stopTunnel() {
+    const btnStart = document.getElementById('btn-start-tunnel');
+    const btnStop = document.getElementById('btn-stop-tunnel');
+    const statusDiv = document.getElementById('tunnel-status');
+    const infoDiv = document.getElementById('tunnel-info');
+    
+    btnStop.disabled = true;
+    btnStop.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Остановка...';
+    
+    const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+    fetch('{{ url_for("stop_tunnel", server_id=server.id) }}', {
+        method: 'POST',
+        headers: {'X-CSRFToken': csrfToken}
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            statusDiv.innerHTML = '<span class="text-muted">○ Туннель остановлен</span>';
+            btnStart.style.display = 'inline-block';
+            btnStart.disabled = false;
+            btnStart.innerHTML = '<i class="bi bi-box-arrow-in-down-right"></i> Запустить туннель';
+            btnStop.style.display = 'none';
+            infoDiv.style.display = 'none';
+        } else {
+            btnStop.disabled = false;
+            btnStop.innerHTML = '<i class="bi bi-box-arrow-up-left"></i> Остановить туннель';
+        }
+    })
+    .catch(error => {
+        btnStop.disabled = false;
+        btnStop.innerHTML = '<i class="bi bi-box-arrow-up-left"></i> Остановить туннель';
+    });
+}
+
+function copyConnectString() {
+    const text = document.getElementById('connect-string').textContent;
+    navigator.clipboard.writeText(text).then(() => {
+        const btn = event.target;
+        const originalText = btn.textContent;
+        btn.textContent = '✓';
+        setTimeout(() => btn.textContent = originalText, 1500);
+    });
+}
+
+// ============================================
+// Проверка статусов при загрузке страницы
+// ============================================
+
+document.addEventListener('DOMContentLoaded', function() {
+    // Проверяем статус Cloudflare
+    fetch('{{ url_for("cloudflare_tunnel_status", server_id=server.id) }}')
+    .then(response => response.json())
+    .then(data => {
+        const statusDiv = document.getElementById('cloudflare-status');
+        const btnSetup = document.getElementById('btn-setup-cloudflare');
+        const btnStart = document.getElementById('btn-start-cloudflare');
+        const btnStop = document.getElementById('btn-stop-cloudflare');
+        const btnDelete = document.getElementById('btn-delete-cloudflare');
+        const infoDiv = document.getElementById('cloudflare-info');
+        
+        if (data.dns_configured) {
+            statusDiv.innerHTML = '<span class="text-success">✓ Cloudflare настроен</span>';
+            btnSetup.style.display = 'none';
+            
+            if (data.tunnel_running) {
+                statusDiv.innerHTML = '<span class="text-success">● Cloudflare Tunnel активен</span>';
+                btnStart.style.display = 'none';
+                btnStop.style.display = 'inline-block';
+                btnDelete.style.display = 'inline-block';
+                infoDiv.style.display = 'block';
+                document.getElementById('cloudflare-subdomain').textContent = data.subdomain;
+                document.getElementById('cloudflare-connect-hint').textContent = data.subdomain;
+            } else {
+                btnStart.style.display = 'inline-block';
+                btnDelete.style.display = 'inline-block';
+                infoDiv.style.display = 'block';
+                document.getElementById('cloudflare-subdomain').textContent = data.subdomain;
+                document.getElementById('cloudflare-connect-hint').textContent = data.subdomain;
+            }
+        } else {
+            statusDiv.innerHTML = '<span class="text-muted">○ Cloudflare не настроен</span>';
+            btnSetup.style.display = 'inline-block';
+            btnStart.style.display = 'none';
+            btnStop.style.display = 'none';
+            btnDelete.style.display = 'none';
+            infoDiv.style.display = 'none';
+        }
+    })
+    .catch(error => {
+        document.getElementById('cloudflare-status').innerHTML = '<span class="text-muted">○ Cloudflare не настроен</span>';
+    });
+    
+    // Проверяем статус SSH туннеля
+    fetch('{{ url_for("tunnel_status", server_id=server.id) }}')
+    .then(response => response.json())
+    .then(data => {
+        const statusDiv = document.getElementById('tunnel-status');
+        const btnStart = document.getElementById('btn-start-tunnel');
+        const btnStop = document.getElementById('btn-stop-tunnel');
+        const infoDiv = document.getElementById('tunnel-info');
+        
+        if (data.active) {
+            statusDiv.innerHTML = '<span class="text-success">● Туннель активен</span>';
+            btnStart.style.display = 'none';
+            btnStop.style.display = 'inline-block';
+            infoDiv.style.display = 'block';
+            document.getElementById('connect-string').textContent = data.connect_string;
+        } else {
+            statusDiv.innerHTML = '<span class="text-muted">○ Туннель остановлен</span>';
+            btnStart.style.display = 'inline-block';
+            btnStop.style.display = 'none';
+            infoDiv.style.display = 'none';
+        }
+    })
+    .catch(error => {
+        document.getElementById('tunnel-status').innerHTML = '<span class="text-muted">○ Туннель остановлен</span>';
+    });
+});
+</script>
 {% endblock %}
