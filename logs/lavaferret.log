@@ -1829,3 +1829,7 @@ net.minecraft.util.DirectoryLock$LockException: /home/root/minecraft_servers/Goi
 2026-09-27 21:58:55 [INFO] __main__: [HOST_STATS API] Host 192.168.10.240:52: ram_total=15179MB, ram_used=6884MB, ram_percent=45.4%
 2026-09-27 21:59:05 [INFO] __main__: [HOST_STATS API] Host 192.168.10.240:52: ram_total=15179MB, ram_used=6865MB, ram_percent=45.2%
 2026-09-27 21:59:15 [INFO] __main__: [HOST_STATS API] Host 192.168.10.240:52: ram_total=15179MB, ram_used=6893MB, ram_percent=45.4%
+2026-10-08 11:49:33 [INFO] __main__: Lavaferret Minecraft Panel запущен с async_mode=threading (WebSocket)
+2026-10-08 11:49:45 [INFO] __main__: WebSocket клиент подключился: 2nW1gkOFvJSPd475AAAB
+2026-10-08 11:49:46 [INFO] __main__: [HOST_STATS API] Host 192.168.10.240:52: ram_total=15179MB, ram_used=6418MB, ram_percent=42.3%
+2026-10-08 11:49:56 [INFO] __main__: [HOST_STATS API] Host 192.168.10.240:52: ram_total=15179MB, ram_used=6238MB, ram_percent=41.1%
